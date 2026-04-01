@@ -2,7 +2,6 @@ const supabase = require('../config/database');
 const StorageService = require('../services/storageService');
 const FileExtractor = require('../services/fileExtractor');
 const LatexGenerator = require('../services/latexGenerator');
-const PDFCompiler = require('../services/pdfCompiler');
 const DocxCompiler = require('../services/docxCompiler');
 const { 
   generateWorksheetId, 
@@ -12,6 +11,8 @@ const {
 const { WORKSHEET_STATUS } = require('../utils/constants');
 
 class WorksheetController {
+  static supportsErrorMessageColumn = true;
+
   /**
    * Create a new worksheet (upload + initiate processing)
    */
@@ -112,11 +113,9 @@ class WorksheetController {
     try {
       const { id } = req.params;
 
-      const { data, error } = await supabase
-        .from('worksheets')
-        .select('id, program, subject, status, created_at, updated_at, output_pdf_storage_path, output_docx_storage_path')
-        .eq('id', id)
-        .single();
+      let result = await WorksheetController.fetchWorksheetStatus(id);
+
+      const { data, error } = result;
 
       if (error || !data) {
         return res.status(404).json({ error: 'Worksheet not found' });
@@ -143,7 +142,8 @@ class WorksheetController {
       res.json({
         ...data,
         pdfUrl: pdfUrl,
-        docxUrl: docxUrl
+        docxUrl: docxUrl,
+        error: data?.error_message || null
       });
 
     } catch (error) {
@@ -176,18 +176,8 @@ class WorksheetController {
       const latexCode = await LatexGenerator.generate(extractedText, program, subject, chapterName);
       console.log(`[${id}] LaTeX generated successfully`);
 
-      // Step 3: Compile to PDF
+      // Step 3: Compile to DOCX
       await this.updateStatus(id, WORKSHEET_STATUS.COMPILING, { latex_content: latexCode });
-      console.log(`[${id}] Compiling PDF...`);
-      
-      const pdfBuffer = await PDFCompiler.compile(latexCode, id, program, subject);
-      console.log(`[${id}] PDF compiled successfully`);
-
-      // Upload PDF to storage
-      const outputResult = await StorageService.uploadOutputPdf(id, pdfBuffer);
-      console.log(`[${id}] PDF uploaded to storage`);
-
-      // Step 4: Compile to DOCX
       console.log(`[${id}] Compiling DOCX...`);
       const docxBuffer = await DocxCompiler.compile(latexCode, id);
       console.log(`[${id}] DOCX compiled successfully`);
@@ -195,10 +185,11 @@ class WorksheetController {
       const docxResult = await StorageService.uploadOutputDocx(id, docxBuffer);
       console.log(`[${id}] DOCX uploaded to storage`);
 
-      // Step 5: Mark as ready
+      // Step 4: Mark as ready
       await this.updateStatus(id, WORKSHEET_STATUS.READY, {
-        output_pdf_storage_path: outputResult.path,
+        output_pdf_storage_path: null,
         output_docx_storage_path: docxResult.path,
+        error_message: null,
         updated_at: new Date().toISOString()
       });
 
@@ -209,6 +200,7 @@ class WorksheetController {
       
       // Mark as failed
       await this.updateStatus(id, WORKSHEET_STATUS.FAILED, {
+        error_message: String(error?.message || error).slice(0, 4000),
         updated_at: new Date().toISOString()
       });
     }
@@ -219,18 +211,69 @@ class WorksheetController {
    * @private
    */
   static async updateStatus(id, status, additionalData = {}) {
-    const { error } = await supabase
+    let payload = {
+      status: status,
+      ...additionalData
+    };
+
+    let { error } = await supabase
       .from('worksheets')
-      .update({ 
-        status: status,
-        ...additionalData 
-      })
+      .update(payload)
       .eq('id', id);
+
+    if (
+      WorksheetController.isMissingErrorMessageColumn(error) &&
+      Object.prototype.hasOwnProperty.call(payload, 'error_message')
+    ) {
+      WorksheetController.supportsErrorMessageColumn = false;
+      const { error_message, ...fallbackPayload } = payload;
+      payload = fallbackPayload;
+      ({ error } = await supabase
+        .from('worksheets')
+        .update(payload)
+        .eq('id', id));
+    }
 
     if (error) {
       console.error(`Failed to update status for ${id}:`, error);
       throw error;
     }
+  }
+
+  static isMissingErrorMessageColumn(error) {
+    if (!error) return false;
+    const message = String(error.message || '');
+    return (
+      message.toLowerCase().includes('error_message') &&
+      (
+        error.code === 'PGRST204' ||
+        error.code === '42703' ||
+        message.includes("'error_message' column") ||
+        message.includes('column worksheets.error_message does not exist')
+      )
+    );
+  }
+
+  static async fetchWorksheetStatus(id) {
+    const selectWithError = 'id, program, subject, status, created_at, updated_at, output_pdf_storage_path, output_docx_storage_path, error_message';
+    const selectWithoutError = 'id, program, subject, status, created_at, updated_at, output_pdf_storage_path, output_docx_storage_path';
+
+    let result = await supabase
+      .from('worksheets')
+      .select(WorksheetController.supportsErrorMessageColumn ? selectWithError : selectWithoutError)
+      .eq('id', id)
+      .single();
+
+    if (WorksheetController.isMissingErrorMessageColumn(result.error)) {
+      WorksheetController.supportsErrorMessageColumn = false;
+      result = await supabase
+        .from('worksheets')
+        .select(selectWithoutError)
+        .eq('id', id)
+        .single();
+    }
+
+    return result;
   }
 }
 

@@ -7,6 +7,7 @@ const path = require('path');
 const { execFile } = require('child_process');
 const xsltProcessor = require('xslt-processor');
 const mathmlToLatex = require('mathml-to-latex');
+const { resolvePandocBinary } = require('../utils/resolveBinary');
 
 class FileExtractor {
   /**
@@ -17,9 +18,16 @@ class FileExtractor {
   static async extractFromDocx(buffer) {
     try {
       const pandocText = await this.extractDocxWithPandoc(buffer);
-      const baseText = this.normalizeMathText(this.normalizePandocText(pandocText || ''));
+      let baseText = this.normalizeMathText(this.normalizePandocText(pandocText || ''));
       if (!baseText) {
-        throw new Error('Pandoc returned empty output.');
+        const mammothResult = await mammoth.extractRawText({ buffer });
+        const equationText = await this.extractDocxEquations(buffer);
+        baseText = this.normalizeMathText(
+          [mammothResult.value || '', equationText || ''].filter(Boolean).join('\n\n')
+        );
+      }
+      if (!baseText) {
+        throw new Error('No text could be extracted from DOCX.');
       }
       return baseText;
     } catch (error) {
@@ -98,7 +106,7 @@ class FileExtractor {
    * @private
    */
   static async extractDocxWithPandoc(buffer) {
-    const pandocBin = process.env.PANDOC_BIN || 'pandoc';
+    const pandocBin = resolvePandocBinary();
     let tmpDir = '';
     try {
       tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pandoc-'));

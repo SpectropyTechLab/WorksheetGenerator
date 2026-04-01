@@ -16,5 +16,8 @@ export interface WorksheetStatusResponse {
   created_at: string;
   updated_at?: string;
   output_pdf_storage_path?: string | null;
+  output_docx_storage_path?: string | null;
   pdfUrl?: string | null;
+  docxUrl?: string | null;
+  error?: string | null;
 }

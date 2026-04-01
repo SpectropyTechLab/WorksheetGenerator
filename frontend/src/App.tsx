@@ -31,7 +31,7 @@ function App() {
   const [status, setStatus] = useState<WorksheetStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
+  const [docxPreviewUrl, setDocxPreviewUrl] = useState<string | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(
     () => localStorage.getItem('auth_token') || null
   );
@@ -48,13 +48,6 @@ function App() {
 
   const isAuthenticated = Boolean(authToken);
 
-  const downloadUrl = useMemo(() => {
-    if (!worksheetId || status !== 'ready') return null;
-    if (!authToken) return null;
-    const tokenParam = encodeURIComponent(authToken);
-    return `${API_BASE}/api/worksheet/${worksheetId}/download?token=${tokenParam}`;
-  }, [worksheetId, status, authToken]);
-
   const downloadDocxUrl = useMemo(() => {
     if (!worksheetId || status !== 'ready') return null;
     if (!authToken) return null;
@@ -62,22 +55,10 @@ function App() {
     return `${API_BASE}/api/worksheet/${worksheetId}/docx?token=${tokenParam}`;
   }, [worksheetId, status, authToken]);
 
-  const previewHeight = useMemo(() => {
-    switch (status) {
-      case 'compiling':
-        return '60vh';
-      case 'generating':
-        return '60vh';
-      case 'extracting':
-        return '60vh';
-      case 'ready':
-        return '60vh';
-      case 'failed':
-        return '60vh';
-      default:
-        return '60vh';
-    }
-  }, [status]);
+  const officePreviewUrl = useMemo(() => {
+    if (!docxPreviewUrl) return null;
+    return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(docxPreviewUrl)}`;
+  }, [docxPreviewUrl]);
 
   useEffect(() => {
     if (!worksheetId || !status) return;
@@ -94,9 +75,9 @@ function App() {
         }
         const data = (await response.json()) as WorksheetStatusResponse;
         setStatus(data.status);
-        if (data.status === 'ready' && authToken) {
-          const tokenParam = encodeURIComponent(authToken);
-          setPdfPreviewUrl(`${API_BASE}/api/worksheet/${worksheetId}/pdf?token=${tokenParam}`);
+        setError(data.status === 'failed' ? data.error || 'Worksheet processing failed' : null);
+        if (data.status === 'ready') {
+          setDocxPreviewUrl(data.docxUrl || null);
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Unknown error');
@@ -133,7 +114,7 @@ function App() {
   const handleSubmit = async (formData: FormData) => {
     setIsSubmitting(true);
     setError(null);
-    setPdfPreviewUrl(null);
+    setDocxPreviewUrl(null);
 
     try {
       const response = await fetch(`${API_BASE}/api/worksheet`, {
@@ -278,7 +259,7 @@ function App() {
             <div className="hero-copy">
               <h2 className="hero-title">Convert worksheets into polished manuals.</h2>
               <p className="hero-subtitle">
-                Upload a Word worksheet, select your Program,Subject,Chapter and let SPECTROPY-RAW AI generate a manual,ready to download.
+                Upload a worksheet, select your Program, Subject, Chapter and let SPECTROPY-RAW AI generate a Word manual ready to download.
               </p>
             </div>
           </div>
@@ -422,33 +403,38 @@ function App() {
             ) : (
             <>
               <div className="preview-header">
-                <h2>PDF preview</h2>
+                <h2>Word preview</h2>
                 <span className="preview-status">
                   Job status: {status ?? 'not started'}
                 </span>
               </div>
               <div className="preview-block">
-                {status === 'ready' && pdfPreviewUrl ? (
+                {status === 'ready' && officePreviewUrl ? (
                   <iframe
-                    title="Generated PDF preview"
+                    title="Generated Word preview"
                     className="pdf-frame"
-                    src={pdfPreviewUrl}
-                    style={{ height: previewHeight }}
+                    src={officePreviewUrl}
+                    style={{ height: '60vh' }}
                   />
+                ) : status === 'ready' ? (
+                  <div className="preview-placeholder">
+                    <p>Your Word manual is ready to download.</p>
+                    <p className="muted">Preview is unavailable, but the DOCX file is ready below.</p>
+                  </div>
+                ) : status === 'failed' ? (
+                  <div className="preview-placeholder">
+                    <p>The job failed before the Word manual could be generated.</p>
+                    <p className="muted">{error || 'Please retry after checking the backend error details.'}</p>
+                  </div>
                 ) : (
-                  <div className="preview-placeholder" style={{ height: previewHeight }}>
-                    <p>Your PDF preview will appear here once the job is ready.</p>
+                  <div className="preview-placeholder">
+                    <p>Your Word manual will be available here once the job is ready.</p>
                     <p className="muted">Upload a worksheet to start the process.</p>
                   </div>
                 )}
                 <div className="download-row">
-                  {downloadUrl && (
-                    <a className="button primary download-button" href={downloadUrl}>
-                      Download PDF
-                    </a>
-                  )}
                   {downloadDocxUrl && (
-                    <a className="button download-button" href={downloadDocxUrl}>
+                    <a className="button primary download-button" href={downloadDocxUrl}>
                       Download Word
                     </a>
                   )}
@@ -462,7 +448,7 @@ function App() {
 
       <footer className="footer">
         <span>Powered by SPECTROPY-RAW AI</span>
-        <span>Output: PDF & Word</span>
+        <span>Output: Word</span>
       </footer>
     </div>
   );

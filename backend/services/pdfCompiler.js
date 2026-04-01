@@ -3,6 +3,7 @@ const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
+const { resolvePdflatexBinary } = require('../utils/resolveBinary');
 
 const execFileAsync = promisify(execFile);
 
@@ -30,30 +31,56 @@ class PDFCompiler {
     const texPath = path.join(tmpDir, 'manual.tex');
     const pdfPath = path.join(tmpDir, 'manual.pdf');
     const logPath = path.join(tmpDir, 'manual.log');
+    const miktexDataDir = path.join(tmpDir, 'miktex-data');
+    const miktexConfigDir = path.join(tmpDir, 'miktex-config');
+    const miktexInstallRoot = process.env.LOCALAPPDATA
+      ? path.join(process.env.LOCALAPPDATA, 'Programs', 'MiKTeX')
+      : '';
 
     try {
       await fs.promises.writeFile(texPath, tex, 'utf8');
+      await fs.promises.mkdir(miktexDataDir, { recursive: true });
+      await fs.promises.mkdir(miktexConfigDir, { recursive: true });
 
-      const pdflatexCmd = process.env.PDFLATEX_BIN
-        ? process.env.PDFLATEX_BIN
-        : (process.platform === 'win32' ? 'pdflatex.exe' : 'pdflatex');
-      const args = [
+      const pdflatexCmd = resolvePdflatexBinary();
+      const args = [];
+      if (process.platform === 'win32') {
+        // MiKTeX can abort non-interactive runs with maintenance/update diagnostics
+        // before TeX compilation starts, even when the format build succeeds.
+        args.push('--miktex-disable-maintenance', '--miktex-disable-diagnose');
+      }
+      args.push(
         '-interaction=nonstopmode',
         '-halt-on-error',
         '-file-line-error',
         '-output-directory',
         tmpDir,
-        texPath
-      ];
+        'manual.tex'
+      );
 
       const { stdout, stderr } = await execFileAsync(pdflatexCmd, args, {
         timeout: 120000,
         windowsHide: true,
         maxBuffer: 10 * 1024 * 1024,
+        cwd: tmpDir,
         env: {
           ...process.env,
+          HOME: tmpDir,
+          USERPROFILE: process.env.USERPROFILE || tmpDir,
+          MIKTEX_USER_DATA: miktexDataDir,
+          MIKTEX_USER_CONFIG: miktexConfigDir,
+          MIKTEX_LOG_DIR: tmpDir,
+          MIKTEX_TRACE: '',
           MIKTEX_UI: process.env.MIKTEX_UI || 'none',
-          MIKTEX_INSTALL: process.env.MIKTEX_INSTALL || '1'
+          MIKTEX_INSTALL: process.env.MIKTEX_INSTALL || '1',
+          MIKTEX_NO_UPDATES: process.env.MIKTEX_NO_UPDATES || '1',
+          MIKTEX_NO_ETC_FONTS: process.env.MIKTEX_NO_ETC_FONTS || '1',
+          TEXMFOUTPUT: tmpDir,
+          TEXMFCACHE: path.join(tmpDir, 'texmf-cache'),
+          TEXMFVAR: path.join(tmpDir, 'texmf-var'),
+          TEXMFCONFIG: path.join(tmpDir, 'texmf-config'),
+          TEXMFHOME: process.env.TEXMFHOME || '',
+          MIKTEX_USER_INSTALL: miktexInstallRoot
         }
       });
 
@@ -65,6 +92,8 @@ class PDFCompiler {
       return await fs.promises.readFile(pdfPath);
     } catch (error) {
       const message = error?.message || String(error);
+      const stdout = error?.stdout ? String(error.stdout).trim() : '';
+      const stderr = error?.stderr ? String(error.stderr).trim() : '';
       let logTail = '';
       try {
         if (fs.existsSync(logPath)) {
@@ -75,8 +104,14 @@ class PDFCompiler {
       } catch {
         // Ignore log read errors.
       }
-      const details = logTail ? `\n--- pdflatex log (tail) ---\n${logTail}` : '';
-      throw new Error(`Failed to compile LaTeX to PDF: ${message}\nTemp dir: ${tmpDir}${details}`);
+      const outputDetails = [stdout, stderr].filter(Boolean).join('\n').trim();
+      const details = [
+        outputDetails ? `\n--- pdflatex output ---\n${outputDetails}` : '',
+        logTail ? `\n--- pdflatex log (tail) ---\n${logTail}` : '',
+        `\nTemp dir: ${tmpDir}`
+      ].join('');
+      process.env.LATEX_KEEP_TEMP = 'true';
+      throw new Error(`Failed to compile LaTeX to PDF: ${message}${details}`);
     } finally {
       const keepTemp = process.env.LATEX_KEEP_TEMP === 'true';
       if (!keepTemp) {

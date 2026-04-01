@@ -88,13 +88,13 @@ function UploadForm({ onSubmit, isSubmitting }: UploadFormProps) {
           accept=".docx,.pdf"
           onChange={handleFileChange}
         />
-        <small>Accepted formats: DOCX. Output will always be PDF.</small>
+        <small>Accepted formats: Word DOCX or PDF. Output will always be Word DOCX.</small>
       </label>
 
       {error && <p className="form-error">{error}</p>}
 
       <button className="button primary" type="submit" disabled={isSubmitting}>
-        {isSubmitting ? 'Uploading�' : 'Submit worksheet'}
+        {isSubmitting ? 'Uploading...' : 'Submit worksheet'}
       </button>
     </form>
   );

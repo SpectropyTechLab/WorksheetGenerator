@@ -3,6 +3,7 @@ const path = require('path');
 const os = require('os');
 const { execFile } = require('child_process');
 const PDFCompiler = require('./pdfCompiler');
+const { resolvePandocBinary } = require('../utils/resolveBinary');
 
 function execFileAsync(command, args, options) {
   return new Promise((resolve, reject) => {
@@ -95,7 +96,7 @@ function sanitizeMarkdownForPandoc(markdownContent) {
 
 class DocxCompiler {
   static async compile(latexContent, worksheetId) {
-    const pandocBin = process.env.PANDOC_BIN || 'pandoc';
+    const pandocBin = resolvePandocBinary();
     const workDir = await fs.mkdtemp(path.join(os.tmpdir(), `p2m-docx-${worksheetId}-`));
     const inputPath = path.join(workDir, 'manual.tex');
     const outputPath = path.join(workDir, 'manual.docx');
