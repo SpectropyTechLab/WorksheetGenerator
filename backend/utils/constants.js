@@ -24,6 +24,14 @@ const WORKSHEET_STATUS = {
   FAILED: 'failed'
 };
 
+// Worksheet categories
+const WORKSHEET_CATEGORIES = {
+  DIRECT: 'direct',
+  SIMILAR: 'similar',
+  PYQ_STYLE: 'pyq_style',
+  REFERENCE: 'reference'
+};
+
 // File Types
 const FILE_TYPES = {
   DOCX: 'docx',
@@ -39,6 +47,7 @@ const MIME_TYPES = {
 module.exports = {
   PROGRAMS,
   SUBJECTS,
+  WORKSHEET_CATEGORIES,
   WORKSHEET_STATUS,
   FILE_TYPES,
   MIME_TYPES

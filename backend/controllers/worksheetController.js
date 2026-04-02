@@ -5,10 +5,9 @@ const LatexGenerator = require('../services/latexGenerator');
 const DocxCompiler = require('../services/docxCompiler');
 const { 
   generateWorksheetId, 
-  getFileExtension,
-  formatStoragePath 
+  getFileExtension
 } = require('../utils/helpers');
-const { WORKSHEET_STATUS } = require('../utils/constants');
+const { WORKSHEET_STATUS, WORKSHEET_CATEGORIES } = require('../utils/constants');
 
 class WorksheetController {
   static supportsErrorMessageColumn = true;
@@ -23,7 +22,7 @@ class WorksheetController {
       if (!process.env.SUPABASE_SERVICE_KEY) missingEnv.push('SUPABASE_SERVICE_KEY');
       if (!process.env.INPUT_BUCKET) missingEnv.push('INPUT_BUCKET');
       if (!process.env.OUTPUT_BUCKET) missingEnv.push('OUTPUT_BUCKET');
-      if (!process.env.OPENAI_API_KEY) missingEnv.push('OPENAI_API_KEY');
+      if (!process.env.GEMINI_API_KEY) missingEnv.push('GEMINI_API_KEY');
 
       if (missingEnv.length > 0) {
         return res.status(500).json({
@@ -32,7 +31,7 @@ class WorksheetController {
         });
       }
 
-      const { program, subject, chapterName } = req.body;
+      const { program, subject, chapterName, category = WORKSHEET_CATEGORIES.DIRECT } = req.body;
       const file = req.file;
 
       // Validation
@@ -46,6 +45,10 @@ class WorksheetController {
 
       if (!chapterName || !String(chapterName).trim()) {
         return res.status(400).json({ error: 'Chapter name is required' });
+      }
+
+      if (!Object.values(WORKSHEET_CATEGORIES).includes(String(category))) {
+        return res.status(400).json({ error: 'Invalid worksheet category' });
       }
 
       const fileType = getFileExtension(file.originalname);
@@ -71,6 +74,7 @@ class WorksheetController {
             id: worksheetId,
             program: program,
             subject: subject,
+            category: String(category),
             chapter_name: String(chapterName).trim(),
             original_filename: file.originalname,
             file_type: fileType,
@@ -86,7 +90,15 @@ class WorksheetController {
       }
 
       // Start background processing
-      WorksheetController.processWorksheet(worksheetId, file.buffer, fileType, program, subject, String(chapterName).trim())
+      WorksheetController.processWorksheet(
+        worksheetId,
+        file.buffer,
+        fileType,
+        program,
+        subject,
+        String(chapterName).trim(),
+        String(category)
+      )
         .catch(err => {
           console.error(`Background processing failed for ${worksheetId}:`, err);
         });
@@ -158,7 +170,7 @@ class WorksheetController {
   /**
    * Background processing workflow
    */
-  static async processWorksheet(id, fileBuffer, fileType, program, subject, chapterName) {
+  static async processWorksheet(id, fileBuffer, fileType, program, subject, chapterName, category) {
     try {
       console.log(`Starting processing for worksheet: ${id}`);
 
@@ -173,7 +185,13 @@ class WorksheetController {
       await this.updateStatus(id, WORKSHEET_STATUS.GENERATING);
       console.log(`[${id}] Generating LaTeX...`);
       
-      const latexCode = await LatexGenerator.generate(extractedText, program, subject, chapterName);
+      const latexCode = await LatexGenerator.generate(
+        { rawText: extractedText },
+        program,
+        subject,
+        chapterName,
+        category
+      );
       console.log(`[${id}] LaTeX generated successfully`);
 
       // Step 3: Compile to DOCX
@@ -255,8 +273,8 @@ class WorksheetController {
   }
 
   static async fetchWorksheetStatus(id) {
-    const selectWithError = 'id, program, subject, status, created_at, updated_at, output_pdf_storage_path, output_docx_storage_path, error_message';
-    const selectWithoutError = 'id, program, subject, status, created_at, updated_at, output_pdf_storage_path, output_docx_storage_path';
+    const selectWithError = 'id, program, subject, category, status, created_at, updated_at, output_pdf_storage_path, output_docx_storage_path, error_message';
+    const selectWithoutError = 'id, program, subject, category, status, created_at, updated_at, output_pdf_storage_path, output_docx_storage_path';
 
     let result = await supabase
       .from('worksheets')

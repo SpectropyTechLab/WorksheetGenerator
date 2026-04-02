@@ -130,7 +130,7 @@ class PDFCompiler {
    */
   static buildLatexDocument(content, headerText, worksheetId) {
     const safeHeader = this.escapeLatexText(String(headerText || '').trim());
-    const title = this.escapeLatexText(`Worksheet Manual ${worksheetId}`);
+    const title = this.escapeLatexText('Worksheet Manual');
     const body = this.convertTextToLatex(content);
 
     return `\\documentclass[11pt]{article}
@@ -241,6 +241,16 @@ ${body}
         continue;
       }
 
+      if (/^(?:\u2022|\u25cf|\u25aa|\u25e6|•)\s*-?\s*/.test(trimmed)) {
+        if (!inList) {
+          output.push('\\begin{itemize}[leftmargin=1.2em]');
+          inList = true;
+        }
+        const item = trimmed.replace(/^(?:\u2022|\u25cf|\u25aa|\u25e6|•)\s*-?\s*/, '');
+        output.push(`\\item ${this.escapeLatexTextPreservingMath(item)}`);
+        continue;
+      }
+
       if (/^•\s*-?\s*/.test(trimmed)) {
         if (!inList) {
           output.push('\\begin{itemize}[leftmargin=1.2em]');
@@ -256,7 +266,7 @@ ${body}
           output.push('\\begin{itemize}[leftmargin=1.2em]');
           inList = true;
         }
-        const item = trimmed.replace(/^-\\s*/, '');
+        const item = trimmed.replace(/^-\s*/, '');
         output.push(`\\item ${this.escapeLatexTextPreservingMath(item)}`);
         continue;
       }
@@ -284,6 +294,7 @@ ${body}
     if (!content) return '';
     return String(content)
       .trim()
+      .replace(/^\s*(?:\u2022|\u25cf|\u25aa|\u25e6|•)\s*-?\s*/gm, '• ')
       // Strip markdown/HTML artifacts.
       .replace(/^\s*\{=html\}\s*$/gm, '')
       .replace(/^\s*<!--\s*-->\s*$/gm, '')

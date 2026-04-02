@@ -3,6 +3,36 @@ const StorageService = require('../services/storageService');
 const { WORKSHEET_STATUS } = require('../utils/constants');
 
 class FileController {
+  static buildDownloadFilename(worksheet, extension) {
+    const subjectMap = {
+      physics: 'PHY',
+      maths: 'MATH',
+      biology: 'BIO',
+      chemistry: 'CHEM'
+    };
+    const categoryMap = {
+      direct: 'direct',
+      similar: 'similar',
+      pyq_style: 'pyq_style',
+      reference: 'reference'
+    };
+
+    const slugify = (value, fallback = '') =>
+      String(value || fallback)
+        .trim()
+        .replace(/[^a-zA-Z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .replace(/_+/g, '_')
+        .toUpperCase();
+
+    const program = slugify(worksheet.program, 'WORKSHEET');
+    const subject = subjectMap[String(worksheet.subject || '').toLowerCase()] || slugify(worksheet.subject, 'SUBJECT');
+    const chapter = slugify(worksheet.chapter_name, 'WORKSHEET');
+    const category = categoryMap[String(worksheet.category || '').toLowerCase()] || 'manual';
+
+    return `${program}_${subject}_${chapter}_${category}_manual.${extension}`;
+  }
+
   /**
    * Get PDF for preview (inline display)
    */
@@ -13,7 +43,7 @@ class FileController {
       // Verify worksheet exists and is ready
       const { data: worksheet, error: worksheetError } = await supabase
         .from('worksheets')
-        .select('output_pdf_storage_path, original_filename')
+        .select('output_pdf_storage_path, original_filename, program, subject, chapter_name, category')
         .eq('id', id)
         .eq('status', WORKSHEET_STATUS.READY)
         .single();
@@ -29,7 +59,7 @@ class FileController {
       );
 
       // Set filename
-      const filename = worksheet.original_filename.replace(/\.[^/.]+$/, '_manual.pdf');
+      const filename = FileController.buildDownloadFilename(worksheet, 'pdf');
 
       // Send PDF for inline viewing
       res.setHeader('Content-Type', 'application/pdf');
@@ -56,7 +86,7 @@ class FileController {
       // Verify worksheet exists and is ready
       const { data: worksheet, error: worksheetError } = await supabase
         .from('worksheets')
-        .select('output_pdf_storage_path, original_filename')
+        .select('output_pdf_storage_path, original_filename, program, subject, chapter_name, category')
         .eq('id', id)
         .eq('status', WORKSHEET_STATUS.READY)
         .single();
@@ -72,7 +102,7 @@ class FileController {
       );
 
       // Set filename
-      const filename = worksheet.original_filename.replace(/\.[^/.]+$/, '_manual.pdf');
+      const filename = FileController.buildDownloadFilename(worksheet, 'pdf');
 
       // Send PDF as attachment
       res.setHeader('Content-Type', 'application/pdf');
@@ -138,7 +168,7 @@ class FileController {
       // Verify worksheet exists and is ready
       const { data: worksheet, error: worksheetError } = await supabase
         .from('worksheets')
-        .select('output_docx_storage_path, original_filename')
+        .select('output_docx_storage_path, original_filename, program, subject, chapter_name, category')
         .eq('id', id)
         .eq('status', WORKSHEET_STATUS.READY)
         .single();
@@ -154,7 +184,7 @@ class FileController {
       );
 
       // Set filename
-      const filename = worksheet.original_filename.replace(/\.[^/.]+$/, '_manual.docx');
+      const filename = FileController.buildDownloadFilename(worksheet, 'docx');
 
       // Send DOCX as attachment
       res.setHeader(

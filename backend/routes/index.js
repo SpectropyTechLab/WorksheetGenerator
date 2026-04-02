@@ -31,10 +31,7 @@ router.get('/', (req, res) => {
       'DELETE /api/users/:id': 'Delete user (admin)',
       'POST /api/worksheet': 'Upload worksheet and start processing',
       'GET /api/worksheet/:id/status': 'Get worksheet processing status',
-      'GET /api/worksheet/:id/pdf': 'Preview PDF (inline)',
-      'GET /api/worksheet/:id/download': 'Download PDF (attachment)',
       'GET /api/worksheet/:id/docx': 'Download DOCX (attachment)',
-      'GET /api/worksheet/:id/pdf-url': 'Get direct PDF URL',
       'DELETE /api/worksheet/:id': 'Delete worksheet and files',
       'GET /api/health': 'Health check'
     }

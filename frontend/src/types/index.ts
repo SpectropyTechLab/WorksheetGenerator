@@ -1,5 +1,6 @@
 export type Program = 'Maestro' | 'Pioneer' | 'Catalyst' | 'Future Foundation' | 'Spark';
 export type Subject = 'Physics' | 'Maths' | 'Biology' | 'Chemistry';
+export type WorksheetCategory = 'direct' | 'similar' | 'pyq_style' | 'reference';
 export type WorksheetStatus = 'extracting' | 'generating' | 'compiling' | 'ready' | 'failed';
 
 export interface WorksheetCreateResponse {
@@ -12,6 +13,7 @@ export interface WorksheetStatusResponse {
   id: string;
   program: Program;
   subject: Subject;
+  category?: WorksheetCategory;
   status: WorksheetStatus;
   created_at: string;
   updated_at?: string;

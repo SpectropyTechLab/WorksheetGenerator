@@ -1,8 +1,14 @@
 import { useState, type ChangeEvent, type FormEvent } from 'react';
-import type { Program, Subject } from '../types';
+import type { Program, Subject, WorksheetCategory } from '../types';
 
 const PROGRAMS: Program[] = ['Maestro', 'Pioneer', 'Catalyst', 'Future Foundation', 'Spark'];
 const SUBJECTS: Subject[] = ['Physics', 'Maths', 'Biology', 'Chemistry'];
+const CATEGORIES: Array<{ value: WorksheetCategory; label: string }> = [
+  { value: 'direct', label: 'Direct Questions' },
+  { value: 'similar', label: 'Similar Questions' },
+  { value: 'pyq_style', label: 'Previous Year Questions' },
+  { value: 'reference', label: 'Reference Questions' }
+];
 
 interface UploadFormProps {
   onSubmit: (formData: FormData) => void | Promise<void>;
@@ -12,6 +18,7 @@ interface UploadFormProps {
 function UploadForm({ onSubmit, isSubmitting }: UploadFormProps) {
   const [program, setProgram] = useState<Program>('Maestro');
   const [subject, setSubject] = useState<Subject>('Maths');
+  const [category, setCategory] = useState<WorksheetCategory>('direct');
   const [chapterName, setChapterName] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +46,7 @@ function UploadForm({ onSubmit, isSubmitting }: UploadFormProps) {
     const formData = new FormData();
     formData.append('program', program);
     formData.append('subject', subject);
+    formData.append('category', category);
     formData.append('chapterName', chapterName.trim());
     formData.append('file', file);
 
@@ -78,6 +86,17 @@ function UploadForm({ onSubmit, isSubmitting }: UploadFormProps) {
             value={chapterName}
             onChange={(e) => setChapterName(e.target.value)}
           />
+        </label>
+
+        <label className="field">
+          <span>Category</span>
+          <select value={category} onChange={(e) => setCategory(e.target.value as WorksheetCategory)}>
+            {CATEGORIES.map((value) => (
+              <option key={value.value} value={value.value}>
+                {value.label}
+              </option>
+            ))}
+          </select>
         </label>
       </div>
 

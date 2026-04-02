@@ -1,6 +1,7 @@
 export type {
   Program,
   Subject,
+  WorksheetCategory,
   WorksheetStatus,
   WorksheetCreateResponse,
   WorksheetStatusResponse

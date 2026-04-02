@@ -3,6 +3,7 @@ create table if not exists public.worksheets (
   id uuid primary key,
   program text not null,
   subject text not null,
+  category text not null default 'direct',
   chapter_name text,
   original_filename text not null,
   file_type text not null,
@@ -15,6 +16,9 @@ create table if not exists public.worksheets (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.worksheets
+  add column if not exists category text default 'direct';
 
 alter table public.worksheets
   add column if not exists chapter_name text;
@@ -41,6 +45,10 @@ alter table public.worksheets
 alter table public.worksheets
   add constraint worksheets_status_check
   check (status in ('extracting','generating','compiling','ready','failed'));
+
+alter table public.worksheets
+  add constraint worksheets_category_check
+  check (category in ('direct','similar','pyq_style','reference'));
 
 create index if not exists worksheets_status_idx on public.worksheets (status);
 create index if not exists worksheets_created_at_idx on public.worksheets (created_at desc);
