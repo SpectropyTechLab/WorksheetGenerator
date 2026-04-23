@@ -1,14 +1,8 @@
-import { useState, type ChangeEvent, type FormEvent } from 'react';
-import type { Program, Subject, WorksheetCategory } from '../types';
+import { useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import type { Program, Subject } from '../types';
 
 const PROGRAMS: Program[] = ['Maestro', 'Pioneer', 'Catalyst', 'Future Foundation', 'Spark'];
 const SUBJECTS: Subject[] = ['Physics', 'Maths', 'Biology', 'Chemistry'];
-const CATEGORIES: Array<{ value: WorksheetCategory; label: string }> = [
-  { value: 'direct', label: 'Direct Questions' },
-  { value: 'similar', label: 'Similar Questions' },
-  { value: 'pyq_style', label: 'Previous Year Questions' },
-  { value: 'reference', label: 'Reference Questions' }
-];
 
 interface UploadFormProps {
   onSubmit: (formData: FormData) => void | Promise<void>;
@@ -18,10 +12,10 @@ interface UploadFormProps {
 function UploadForm({ onSubmit, isSubmitting }: UploadFormProps) {
   const [program, setProgram] = useState<Program>('Maestro');
   const [subject, setSubject] = useState<Subject>('Maths');
-  const [category, setCategory] = useState<WorksheetCategory>('direct');
   const [chapterName, setChapterName] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = event.target.files?.[0] ?? null;
@@ -46,7 +40,6 @@ function UploadForm({ onSubmit, isSubmitting }: UploadFormProps) {
     const formData = new FormData();
     formData.append('program', program);
     formData.append('subject', subject);
-    formData.append('category', category);
     formData.append('chapterName', chapterName.trim());
     formData.append('file', file);
 
@@ -88,32 +81,34 @@ function UploadForm({ onSubmit, isSubmitting }: UploadFormProps) {
           />
         </label>
 
-        <label className="field">
-          <span>Category</span>
-          <select value={category} onChange={(e) => setCategory(e.target.value as WorksheetCategory)}>
-            {CATEGORIES.map((value) => (
-              <option key={value.value} value={value.value}>
-                {value.label}
-              </option>
-            ))}
-          </select>
-        </label>
       </div>
 
       <label className="field file-field">
-        <span>Upload worksheet</span>
+        <span>Upload source material</span>
         <input
+          ref={fileInputRef}
+          className="native-file-input"
           type="file"
           accept=".docx,.pdf"
           onChange={handleFileChange}
         />
-        <small>Accepted formats: Word DOCX or PDF. Output will always be Word DOCX.</small>
+        <div className="file-picker-row">
+          <button
+            className="button secondary file-picker-button"
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            Choose File
+          </button>
+          <span className="file-picker-name">{file?.name || 'No file chosen'}</span>
+        </div>
+        <small>Accepted formats: PDF or Word DOCX. The final output is a premium Word worksheet.</small>
       </label>
 
       {error && <p className="form-error">{error}</p>}
 
       <button className="button primary" type="submit" disabled={isSubmitting}>
-        {isSubmitting ? 'Uploading...' : 'Submit worksheet'}
+        {isSubmitting ? 'Starting job...' : 'Generate worksheet'}
       </button>
     </form>
   );

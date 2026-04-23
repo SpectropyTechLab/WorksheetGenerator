@@ -1,6 +1,6 @@
 const axios = require('axios');
 require('dotenv').config();
-const { WORKSHEET_CATEGORIES } = require('../utils/constants');
+const ConceptAuditService = require('./conceptAuditService');
 
 const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -11,7 +11,7 @@ const FALLBACK_MODELS = (process.env.GEMINI_FALLBACK_MODELS || '')
   .filter(Boolean);
 
 class LatexGenerator {
-  static async generate(input, program, subject, chapterName, category = WORKSHEET_CATEGORIES.DIRECT) {
+  static async generate(input, program, subject, chapterName) {
     try {
       if (!GEMINI_API_KEY) {
         throw new Error('GEMINI_API_KEY is missing. Set it in backend/.env.');
@@ -22,80 +22,66 @@ class LatexGenerator {
         throw new Error('No extracted worksheet text found to process.');
       }
 
-      if (category === WORKSHEET_CATEGORIES.DIRECT || category === WORKSHEET_CATEGORIES.SIMILAR) {
-        return await this.generateChunked(rawText, program, subject, chapterName, category);
+      const audit = ConceptAuditService.audit(rawText, subject, chapterName);
+      const prompt = this.buildPrompt({
+        rawText,
+        program,
+        subject,
+        chapterName,
+        audit
+      });
+      let content = '';
+
+      try {
+        content = await this.generateWithFallbacks(prompt);
+      } catch (generationError) {
+        console.warn(
+          `Worksheet generation model call failed, using resilient fallback content: ${
+            generationError?.message || generationError
+          }`
+        );
       }
 
-      const prompt = this.buildPrompt({ rawText, program, subject, chapterName, category });
-      const content = await this.generateWithFallbacks(prompt);
-      const cleaned = this.enforceQuestionCount(this.cleanGeneratedText(content), category);
-      this.validateOutput(cleaned, category);
-      return cleaned;
+      const cleaned = this.cleanGeneratedText(content, chapterName, audit);
+      const completed = this.ensureRequiredSections(cleaned, chapterName, audit);
+      this.validateOutput(completed);
+      return completed;
     } catch (error) {
-      console.error('LaTeX generation error:', error);
-      const status = error?.status || error?.response?.status;
-      if (status === 429) {
-        if (process.env.GEMINI_FALLBACK === 'true') {
-          return this.buildFallbackContent(input, program, subject, chapterName, category);
-        }
-        throw new Error('Gemini quota exceeded. Check your API usage and billing.');
-      }
-      throw new Error(`Failed to generate LaTeX: ${error.message || 'Unknown error'}`);
+      console.error('Worksheet generation error:', error);
+      throw new Error(`Failed to generate worksheet content: ${error.message || 'Unknown error'}`);
     }
   }
 
   static async generateWithFallbacks(prompt) {
-    try {
-      return await this.generateWithModel(DEFAULT_MODEL, prompt);
-    } catch (error) {
-      const status = error?.status || error?.response?.status;
-      if (status !== 404 || FALLBACK_MODELS.length === 0) {
-        throw error;
-      }
+    const candidateModels = [DEFAULT_MODEL, ...FALLBACK_MODELS].filter(Boolean);
+    let lastError = null;
 
-      for (const model of FALLBACK_MODELS) {
-        try {
-          return await this.generateWithModel(model, prompt);
-        } catch (fallbackError) {
-          console.warn(`Fallback model "${model}" failed: ${fallbackError?.message || fallbackError}`);
+    for (const model of candidateModels) {
+      try {
+        return await this.generateWithModel(model, prompt);
+      } catch (error) {
+        lastError = error;
+        const status = error?.status || error?.response?.status;
+        console.warn(`Model "${model}" failed${status ? ` with status ${status}` : ''}: ${error?.message || error}`);
+
+        if (!this.isRetryableModelError(status)) {
+          throw error;
         }
       }
-
-      throw error;
     }
+
+    throw lastError || new Error('No Gemini model produced worksheet content.');
   }
 
-  static async generateChunked(rawText, program, subject, chapterName, category) {
-    const worksheetTitle = this.resolveWorksheetTitle(program, subject, chapterName);
-    const chunks = this.chunkWorksheet(rawText);
-    if (chunks.length === 0) {
-      throw new Error('No worksheet chunks available for generation.');
-    }
-
-    const outputs = [];
-    for (let index = 0; index < chunks.length; index += 1) {
-      const prompt = this.buildChunkPrompt({
-        chunkText: chunks[index],
-        chunkIndex: index + 1,
-        chunkCount: chunks.length,
-        program,
-        subject,
-        worksheetTitle,
-        category
-      });
-      const chunkOutput = await this.generateWithFallbacks(prompt);
-      outputs.push(this.cleanGeneratedText(chunkOutput));
-    }
-
-    const merged = this.mergeChunkOutputs(outputs, worksheetTitle, category);
-    this.validateOutput(merged, category);
-    return merged;
+  static isRetryableModelError(status) {
+    return [404, 429, 500, 503].includes(Number(status));
   }
 
   static async generateWithModel(modelName, prompt) {
     const normalizedModel = modelName.startsWith('models/')
       ? modelName
       : `models/${modelName}`;
+
     const response = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/${normalizedModel}:generateContent`,
       {
@@ -106,7 +92,7 @@ class LatexGenerator {
           }
         ],
         generationConfig: {
-          temperature: 0.3,
+          temperature: 0.2,
           maxOutputTokens: MAX_OUTPUT_TOKENS
         }
       },
@@ -115,7 +101,7 @@ class LatexGenerator {
           'x-goog-api-key': GEMINI_API_KEY,
           'content-type': 'application/json'
         },
-        timeout: 90000
+        timeout: 120000
       }
     );
 
@@ -126,429 +112,496 @@ class LatexGenerator {
     );
   }
 
-  static buildPrompt({ rawText, program, subject, chapterName, category }) {
+  static buildPrompt({ rawText, program, subject, chapterName, audit }) {
     const worksheetTitle = this.resolveWorksheetTitle(program, subject, chapterName);
-    const categoryLabel = this.getCategoryLabel(category);
+    return `You are a Senior Subject Matter Expert, Curriculum Specialist, Assessment Designer, Academic Content Quality Auditor, and Premium Coaching Material Designer.
 
-    return `You are an educational worksheet expert creating a Word manual.
-Return ONLY plain text. No markdown fences.
-Use ASCII characters where possible. Preserve LaTeX math delimiters if you use math.
+Your task is to create a premium worksheet manual in DOCX-friendly Markdown.
+Return ONLY Markdown. No code fences. No JSON.
+Keep all mathematics in LaTeX math delimiters such as $...$ or $$...$$.
+Mirror the structure of a premium coaching worksheet sample document:
+- main title at the top
+- a Heading 1 repeating the worksheet title
+- Heading 2 sections
+- title page fields shown line by line
+- audit blocks with bold labels followed by clean content
+- question blocks arranged as question, then options, then "Solution:", then stepwise lines, then "Final Answer:"
 
-Manual header format:
-SPECTROPY-IIT FOUNDATION MENTOR'S MANUAL
-Worksheet: ${worksheetTitle}
-Category: ${categoryLabel}
-Syllabus Topics Covered: <comma-separated topics>
-Answer Key and Detailed Solutions
+STRICT SOURCE RULES:
+1. Use only concepts explicitly present in the source or strongly inferable from it.
+2. Do not introduce new theorems, formulas, applications, terminology families, or exam tricks beyond the source.
+3. If a requested question type would go out of scope, keep the difficulty high but remain inside the source boundary.
+4. Every question must be traceable to the allowed concept list.
+5. Include diagrams only as simple DOCX-safe text figures or figure notes where needed.
+6. Do not include any worksheet ID, UUID, job ID, storage path, or internal system identifier anywhere in the output.
 
-Per-question output format:
-1. <question text>
-(a) ...
-(b) ...
-(c) ...
-(d) ...
-Key: (<correct option letter>) <answer text if available>
-Solution:
-• ...
-• ...
-• ...
-• ...
-• ...
+SOURCE AUDIT SNAPSHOT
+Worksheet title: ${worksheetTitle}
+Program: ${program}
+Subject: ${subject}
+Allowed concepts:
+${this.renderAuditList(audit.allowedConcepts)}
 
-Category behavior:
-${this.getCategoryInstructions(category, subject)}
+Concepts not allowed:
+${this.renderAuditList(audit.bannedConcepts)}
 
-Hard rules:
-1. Keep numbering sequential.
-2. Every question must have options, a key, and a solution.
-3. Solutions must have 4 to 6 short bullet lines, each starting with "• ".
-4. Do not leave empty questions.
-5. Do not output tables or markdown pipes.
-6. Keep the final result suitable for DOCX conversion.
+Definitions and ideas from source:
+${this.renderAuditObjects(audit.definitions)}
 
-PROGRAM: ${String(program || '').toUpperCase()}
-SUBJECT: ${String(subject || '').toUpperCase()}
-CHAPTER: ${worksheetTitle}
+Formulas and quantitative expressions from source:
+${this.renderAuditObjects(audit.formulas)}
 
-RAW EXTRACTED TEXT:
-${rawText}
+Examples and applications from source:
+${this.renderAuditObjects(audit.examples)}
 
-Return ONLY the final manual content.`;
+Diagram candidates from source:
+${this.renderAuditObjects(audit.diagramIdeas)}
+
+MANDATORY DOCUMENT STRUCTURE
+# Premium Olympiad Practice Worksheet
+## Premium Olympiad Practice Worksheet
+## Title Page
+Show:
+- Program
+- Subject
+- Chapter
+- Theme line: "Academic + Premium Coaching Institute Style"
+- A short source-fidelity statement
+
+## Source Concept Audit
+Include:
+- Chapter / Topic Title
+- Concepts Explicitly Present
+- Concepts Not Present And Therefore Not Allowed
+- Formula Bank
+- Diagram Opportunities
+
+## Section 1: MCQ - Single Correct Answer Type
+- Remember - 2 questions
+- Understand - 2 questions
+- Apply - 2 questions
+- Analyse - 2 questions
+- Evaluate - 2 questions
+
+## Section 2: MCQ - Multiple Correct Answer Type
+- Apply - 2 questions
+- Analyse - 2 questions
+- Evaluate - 2 questions
+
+## Section 3: Comprehension
+- One source-rooted passage
+- Remember - 1 question
+- Understand - 1 question
+- Apply - 1 question
+- Analyse - 1 question
+
+## Section 4: Assertion & Reason
+- Understand - 1 question
+- Apply - 1 question
+- Analyse - 1 question
+
+## Section 5: Matching Type
+- Understand - 1 question
+- Apply - 1 question
+- Analyse - 1 question
+
+## Section 6: Source-Aligned PYQ Style
+- 4 MCQs total
+- Cover styles inspired by National Olympiad, JEE Main, JEE Advanced, International Olympiad, Asian Olympiad
+- If exact PYQ use is unsafe, create a source-aligned PYQ-style question
+
+## Section 7: Key & Solutions
+- Give detailed step-by-step solutions for every question from Q1 onward
+- Every step on a new line
+- Mention the final answer clearly
+- Add simple figure notes again when needed in a solution
+
+## Bonus Section: 10 Advanced Questions - JEE Advanced & International Olympiad Level
+- 5 JEE Advanced level
+- 5 International Olympiad level
+- Still strictly within source concept boundaries
+- Provide full solutions
+
+## Section 8: Classwork and Homework Classification
+- Add heading exactly as "Classwork and Homework Classification"
+- Add a Markdown table with columns:
+  Category | Recommended Purpose | Question Numbers | Rationale
+- Include separate rows for Classwork and Homework
+- Add a short teacher note below the table
+
+QUESTION WRITING RULES
+1. Number questions sequentially as Q1, Q2, Q3 ... across all assessable questions before the solutions section.
+2. For each question, show Bloom's level explicitly in the sample style: Qn. (Remember) ...
+3. For MCQs, provide options A, B, C, D.
+4. For multiple-correct questions, clearly state "More than one option may be correct."
+5. For matching questions, use two clean lists.
+6. Use rich math notation in LaTeX.
+7. Do not add source alignment lines, hidden notes, IDs, metadata lines, or audit traces under questions.
+8. Put each question on its own line.
+9. Put every option on its own new line directly below the question.
+10. Never merge a question and its options into the same paragraph.
+11. After the options, write "Solution:" on its own line in bold style if possible.
+12. Below "Solution:", write each step on a new line.
+13. Put "Final Answer:" on its own new line below the steps.
+11. Where a diagram helps, add:
+   Figure note: Not to scale.
+   Diagram:
+   <simple text figure or figure description>
+14. Avoid decorative stories.
+
+SOLUTION WRITING RULES
+1. Do not move all solutions into a separate answer-key-only layout.
+2. For this output style, place the solution directly below each question block.
+3. Write each step on a new line beginning with "Step 1.", "Step 2." and so on.
+4. End with "Final Answer:".
+5. Keep the solution exam-oriented and source-aligned.
+6. Do not combine multiple questions into one paragraph.
+
+QUALITY CONTROL RULES
+1. Ensure all mandated counts are exactly correct.
+2. Make the worksheet polished and print-friendly.
+3. Do not mention that the model lacks certainty.
+4. Do not skip Section 8.
+5. Every list item and every point must appear on a separate new line.
+
+SOURCE CONTENT
+${audit.sourceExcerpt || rawText.slice(0, 12000)}
+
+Return only the final Markdown manual.`;
   }
 
-  static buildChunkPrompt({ chunkText, chunkIndex, chunkCount, program, subject, worksheetTitle, category }) {
-    const categoryLabel = this.getCategoryLabel(category);
-
-    return `You are an educational worksheet expert creating a Word manual.
-Return ONLY plain text. No markdown fences.
-Use ASCII characters where possible. Preserve LaTeX math delimiters if you use math.
-
-You are working on chunk ${chunkIndex} of ${chunkCount} from the same worksheet.
-Generate ONLY the numbered questions for this chunk.
-Do not include the document header in this chunk output.
-Continue normal question numbering based on the chunk content itself.
-
-Per-question output format:
-1. <question text>
-(a) ...
-(b) ...
-(c) ...
-(d) ...
-Key: (<correct option letter>) <answer text if available>
-Solution:
-• ...
-• ...
-• ...
-• ...
-• ...
-
-Category behavior:
-${this.getChunkCategoryInstructions(category)}
-
-Hard rules:
-1. Cover all questions that appear in this chunk.
-2. Do not skip questions.
-3. Do not merge multiple questions into one.
-4. Every question must have options, key, and solution.
-5. Do not output tables or markdown pipes.
-
-PROGRAM: ${String(program || '').toUpperCase()}
-SUBJECT: ${String(subject || '').toUpperCase()}
-WORKSHEET: ${worksheetTitle}
-CATEGORY: ${categoryLabel}
-
-CHUNK CONTENT:
-${chunkText}
-
-Return ONLY the question content for this chunk.`;
+  static renderAuditList(items) {
+    const safeItems = Array.isArray(items) && items.length > 0 ? items : ['No explicit items extracted'];
+    return safeItems.map((item) => `- ${item}`).join('\n');
   }
 
-  static getCategoryInstructions(category, subject) {
-    switch (category) {
-      case WORKSHEET_CATEGORIES.SIMILAR:
-        return `Read the uploaded worksheet text and identify the original questions.
-Generate a similar-question manual based on those source questions.
-Create new but conceptually similar questions with similar difficulty and chapter relevance.
-Do not copy the original wording directly.
-Try to keep the generated question count aligned with the source worksheet.`;
-      case WORKSHEET_CATEGORIES.PYQ_STYLE:
-        return `Generate exactly 15 previous-year-style multiple-choice questions. Do not generate more than 15 questions.
-The style should be inspired by EAPCET, NEET, JEE Main, JEE Advanced, National Olympiad, International Olympiad, Asian Olympiad, and BITSAT.
-These are exam-style inspired questions, not verified historical questions.
-Keep them chapter-relevant, varied in difficulty, and suitable for competitive exam preparation.`;
-      case WORKSHEET_CATEGORIES.REFERENCE:
-        return `Generate exactly 15 reference practice multiple-choice questions. Do not generate more than 15 questions.
-Base them on the uploaded worksheet topic and these subject-specific reference-book styles:
-${this.getReferenceSourcesBySubject(subject)}
-Do not make them feel like previous-year exam questions.
-Use the worksheet only to infer chapter topics and concept coverage.
-Vary the source style across the set instead of repeating the same book for every question.
-For each question, include a short reference line such as "Reference: H.C. Verma style", "Reference: Morrison & Boyd style", or "Reference: S.L. Loney style".`;
-      case WORKSHEET_CATEGORIES.DIRECT:
-      default:
-        return `Read the worksheet and preserve the original questions as faithfully as possible.
-Keep the original question intent, order, and coverage while adding key and solution.
-Try to keep the question count aligned with the uploaded worksheet.`;
-    }
+  static renderAuditObjects(items) {
+    const safeItems = Array.isArray(items) && items.length > 0
+      ? items
+      : [{ label: 'Not clearly extracted', text: 'Use only the source text.' }];
+    return safeItems
+      .map((item) => `- ${item.label}: ${item.text}`)
+      .join('\n');
   }
 
-  static getChunkCategoryInstructions(category) {
-    switch (category) {
-      case WORKSHEET_CATEGORIES.SIMILAR:
-        return `For each source question in this chunk, create one new but conceptually similar question.
-Keep similar difficulty and chapter relevance.
-Do not copy the original wording exactly.`;
-      case WORKSHEET_CATEGORIES.DIRECT:
-      default:
-        return `Preserve the original questions in this chunk as faithfully as possible.
-Keep the question intent, order, and coverage while adding key and solution.`;
-    }
-  }
-
-  static validateOutput(content, category) {
-    if (!String(content || '').trim()) {
-      throw new Error('Gemini returned empty content.');
-    }
-
-    const actualCount = this.countQuestions(content);
-    if (actualCount === 0) {
-      throw new Error('Generated output did not contain recognizable numbered questions.');
-    }
-    if (category === WORKSHEET_CATEGORIES.PYQ_STYLE || category === WORKSHEET_CATEGORIES.REFERENCE) {
-      if (actualCount < 15) {
-        throw new Error(`Generated ${actualCount} questions; expected exactly 15.`);
-      }
-      if (actualCount > 15) {
-        throw new Error(`Generated ${actualCount} questions; expected no more than 15.`);
-      }
-    }
-  }
-
-  static enforceQuestionCount(content, category) {
-    if (category !== WORKSHEET_CATEGORIES.PYQ_STYLE && category !== WORKSHEET_CATEGORIES.REFERENCE) {
-      return content;
-    }
-
-    const sections = this.splitHeaderAndBody(content);
-    const blocks = this.extractQuestionBlocks(sections.body);
-    if (blocks.length <= 15) {
-      return content;
-    }
-
-    const trimmedBody = blocks
-      .slice(0, 15)
-      .map((block, index) => this.renumberQuestionBlock(block, index + 1))
-      .join('\n\n')
-      .trim();
-
-    return [sections.header, trimmedBody].filter(Boolean).join('\n\n').trim();
-  }
-
-  static splitHeaderAndBody(content) {
-    const source = String(content || '').trim();
-    const marker = 'Answer Key and Detailed Solutions';
-    const markerIndex = source.indexOf(marker);
-    if (markerIndex === -1) {
-      return { header: '', body: source };
-    }
-
-    const header = source.slice(0, markerIndex + marker.length).trim();
-    const body = source.slice(markerIndex + marker.length).trim();
-    return { header, body };
-  }
-
-  static extractQuestionBlocks(body) {
-    const source = String(body || '').trim();
-    if (!source) return [];
-
-    const matches = [...source.matchAll(/(^|\n)\s*(?:Q\s*)?\d+[\.\)]\s+/gim)];
-    if (matches.length === 0) return [];
-
-    const blocks = [];
-    for (let i = 0; i < matches.length; i += 1) {
-      const match = matches[i];
-      const start = match.index + match[1].length;
-      const end = i + 1 < matches.length ? matches[i + 1].index : source.length;
-      const block = source.slice(start, end).trim();
-      if (block) blocks.push(block);
-    }
-    return blocks;
-  }
-
-  static renumberQuestionBlock(block, number) {
-    return String(block || '').replace(/^(?:Q\s*)?\d+[\.\)]\s+/, `${number}. `);
-  }
-
-  static chunkWorksheet(rawText) {
-    const source = String(rawText || '').replace(/\r\n/g, '\n').trim();
-    if (!source) return [];
-
-    const questionMatches = [];
-    const regex = /(^|\n)\s*(?:Q\s*)?\d+[\.\)]\s+/gim;
-    let match;
-    while ((match = regex.exec(source)) !== null) {
-      questionMatches.push(match.index + match[1].length);
-    }
-
-    if (questionMatches.length < 2) {
-      return this.chunkByLength(source, 5500);
-    }
-
-    const blocks = [];
-    for (let i = 0; i < questionMatches.length; i += 1) {
-      const start = questionMatches[i];
-      const end = i + 1 < questionMatches.length ? questionMatches[i + 1] : source.length;
-      const block = source.slice(start, end).trim();
-      if (block) blocks.push(block);
-    }
-
-    const chunks = [];
-    let current = [];
-    let currentLength = 0;
-    for (const block of blocks) {
-      const blockLength = block.length + 2;
-      if (current.length > 0 && (current.length >= 8 || currentLength + blockLength > 6500)) {
-        chunks.push(current.join('\n\n'));
-        current = [];
-        currentLength = 0;
-      }
-      current.push(block);
-      currentLength += blockLength;
-    }
-    if (current.length > 0) {
-      chunks.push(current.join('\n\n'));
-    }
-
-    return chunks.length > 0 ? chunks : this.chunkByLength(source, 5500);
-  }
-
-  static chunkByLength(text, maxLength) {
-    const source = String(text || '').trim();
-    if (!source) return [];
-    const chunks = [];
-    let start = 0;
-    while (start < source.length) {
-      let end = Math.min(start + maxLength, source.length);
-      if (end < source.length) {
-        const breakIndex = source.lastIndexOf('\n', end);
-        if (breakIndex > start + 1000) {
-          end = breakIndex;
-        }
-      }
-      chunks.push(source.slice(start, end).trim());
-      start = end;
-    }
-    return chunks.filter(Boolean);
-  }
-
-  static mergeChunkOutputs(outputs, worksheetTitle, category) {
-    const body = outputs
-      .map((chunk) => this.stripHeader(chunk))
-      .filter(Boolean)
-      .join('\n\n')
-      .trim();
-
-    const topics = 'To be inferred from worksheet';
-    return `SPECTROPY-IIT FOUNDATION MENTOR'S MANUAL
-Worksheet: ${worksheetTitle}
-Category: ${this.getCategoryLabel(category)}
-Syllabus Topics Covered: ${topics}
-Answer Key and Detailed Solutions
-
-${body}`.trim();
-  }
-
-  static stripHeader(text) {
-    const lines = String(text || '').split(/\r?\n/);
-    const filtered = lines.filter((line) => {
-      const trimmed = line.trim();
-      if (!trimmed) return true;
-      if (trimmed === "SPECTROPY-IIT FOUNDATION MENTOR'S MANUAL") return false;
-      if (trimmed.startsWith('Worksheet:')) return false;
-      if (trimmed.startsWith('Category:')) return false;
-      if (trimmed.startsWith('Syllabus Topics Covered:')) return false;
-      if (trimmed === 'Answer Key and Detailed Solutions') return false;
-      return true;
-    });
-    return filtered.join('\n').trim();
-  }
-
-  static cleanGeneratedText(text) {
-    const cleaned = (text || '')
+  static cleanGeneratedText(text, chapterName, audit) {
+    const cleaned = String(text || '')
       .replace(/^```[\s\S]*?\n?/gm, '')
       .replace(/^```\s*\n?/gm, '')
+      .replace(/^.*Worksheet ID:\s*.+$/gim, '')
+      .replace(/^.*Source alignment:\s*.+$/gim, '')
       .replace(/\r\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
       .trim();
-    return this.normalizeSolutionBullets(this.normalizeGeneratedText(this.removeDuplicateLines(cleaned)));
-  }
 
-  static normalizeGeneratedText(text) {
-    return String(text || '')
-      .replace(/^\s*[•●▪◦]\s*-?\s*/gm, '- ')
-      .replace(/(^|\n)\s*Solution\s*:\s*\n(?=(?:[•●▪◦]|-)\s*)/g, '$1Solution:\n')
-      .replace(/(^|\n)\s*Solution\s*:\s*[•●▪◦]\s*-?\s*/g, '$1Solution:\n- ')
-      // Normalize malformed fill-in-the-blank placeholders like "{}_{}_{}_".
-      .replace(/(?:\\?\{\}\s*_+\s*){2,}|(?:\\\{\}\\?_+\s*){2,}/g, '_________')
-      .replace(/(?:\\\{\}_?){3,}/g, '_________')
-      .replace(/(?:\\\{\}\s*_?){3,}/g, '_________')
-      .replace(/(?:\\\{\}\\_){2,}/g, '_________')
-      .replace(/(?:\{\}_\s*){2,}/g, '_________')
-      .replace(/(?:\\\{\}_\s*){2,}/g, '_________')
-      .replace(/_{10,}/g, '_________');
-  }
-
-  static removeDuplicateLines(text) {
-    const lines = (text || '').split(/\r?\n/);
-    const output = [];
-    let last = '';
-    for (const line of lines) {
-      const normalized = line.trim().replace(/\s+/g, ' ');
-      if (normalized && normalized === last) continue;
-      output.push(line);
-      last = normalized;
+    if (!cleaned) {
+      return this.buildFallbackContent(chapterName, audit);
     }
-    return output.join('\n').trim();
+
+    return this.normalizeWorksheetFormatting(cleaned);
   }
 
-  static normalizeSolutionBullets(text) {
-    return String(text || '')
-      .replace(/^\s*(?:\u2022|\u25cf|\u25aa|\u25e6)\s*-?\s*/gm, '• ')
-      .replace(/^\s*-\s+/gm, '• ')
-      .replace(/(^|\n)\s*Solution\s*:\s*\n(?=(?:(?:\u2022|\u25cf|\u25aa|\u25e6|•)|-)\s*)/g, '$1Solution:\n')
-      .replace(/(^|\n)\s*Solution\s*:\s*(?:\u2022|\u25cf|\u25aa|\u25e6|•)\s*-?\s*/g, '$1Solution:\n• ');
+  static normalizeWorksheetFormatting(content) {
+    return String(content || '')
+      .replace(/^# Premium Olympiad Practice Worksheet\s+## Title Page/m, '# Premium Olympiad Practice Worksheet\n\n## Premium Olympiad Practice Worksheet\n\n## Title Page')
+      .replace(/\[Bloom'?s Level:\s*([^\]]+)\]/gi, '($1)')
+      .replace(/^(Q\d+\.\s*)(?!\()/gm, '$1')
+      .replace(/^(Q\d+\.\s*)\(([^)]+)\)\s*/gm, '$1($2) ')
+      .replace(/([^\n])\n([A-D]\.\s)/g, '$1\n$2')
+      .replace(/([^\n])\n(Solution:)/g, '$1\n$2')
+      .replace(/([^\n])\n(Final Answer:)/g, '$1\n$2')
+      .replace(/^### Solution for Q\d+\s*$/gim, 'Solution:')
+      .replace(/\*\*Solution:\*\*/g, 'Solution:')
+      .replace(/\*\*Final Answer:\*\*/g, 'Final Answer:')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   }
 
-  static buildFallbackContent(input, program, subject, chapterName, category) {
-    const rawText = typeof input?.rawText === 'string' ? input.rawText : String(input || '');
-    const title = this.resolveWorksheetTitle(program, subject, chapterName);
-    const categoryLabel = this.getCategoryLabel(category);
-    const source = rawText.slice(0, 4000);
+  static ensureRequiredSections(content, chapterName, audit) {
+    const normalized = String(content || '').trim() || this.buildFallbackContent(chapterName, audit);
+    const requiredSections = this.buildRequiredSectionTemplates(chapterName, audit);
+    let completed = normalized;
 
-    return `SPECTROPY-IIT FOUNDATION MENTOR'S MANUAL
-Worksheet: ${title}
-Category: ${categoryLabel}
-Syllabus Topics Covered: ${subject}
-Answer Key and Detailed Solutions
+    for (const [marker, template] of requiredSections) {
+      if (!completed.includes(marker)) {
+        completed = `${completed.trim()}\n\n${template}`.trim();
+      }
+    }
 
-1. ${source}
-(a) Option A
-(b) Option B
-(c) Option C
-(d) Option D
-Key: (a)
+    if (!completed.includes('### Classwork and Homework Classification')) {
+      completed = completed.replace(
+        '## Section 8: Classwork and Homework Classification',
+        '## Section 8: Classwork and Homework Classification\n### Classwork and Homework Classification'
+      );
+    }
+
+    return completed.trim();
+  }
+
+  static buildRequiredSectionTemplates(chapterName, audit) {
+    const title = String(chapterName || '').trim() || audit.chapterTitle || 'Worksheet Topic';
+    const concepts = audit.allowedConcepts.length ? audit.allowedConcepts.join(', ') : 'source concepts only';
+
+    return [
+      [
+        '# Premium Olympiad Practice Worksheet',
+        `# Premium Olympiad Practice Worksheet
+
+## Premium Olympiad Practice Worksheet
+
+## Title Page
+**Program**: Maestro Worksheet Generator
+**Subject**: ${audit.subject || 'Subject'}
+**Chapter**: ${title}
+**Theme line**: "Academic + Premium Coaching Institute Style"
+This worksheet remains restricted to the uploaded source content.`
+      ],
+      [
+        '## Source Concept Audit',
+        `## Source Concept Audit
+**Chapter / Topic Title**: ${title}
+
+**Concepts Explicitly Present**:
+- ${concepts.split(', ').join('\n- ')}
+
+**Concepts Not Present And Therefore Not Allowed**:
+- Any concept outside the uploaded source
+
+**Formula Bank**:
+- Use only formulas visible in the source
+
+**Diagram Opportunities**:
+- Insert only source-rooted diagrams when needed`
+      ],
+      [
+        '## Section 1: MCQ - Single Correct Answer Type',
+        `## Section 1: MCQ - Single Correct Answer Type
+Q1. (Remember) Placeholder to be kept source-rooted.
+A. Option A
+B. Option B
+C. Option C
+D. Option D
 Solution:
-• Review the source worksheet for this concept.
-• Confirm the topic and chapter context.
-• Cross-check the options against the question stem.
-• Use the chapter method shown in class.
-• Finalize the best-supported answer.`;
+Step 1. Revisit the relevant line from the uploaded source.
+Step 2. Keep the reasoning inside the source boundary.
+Final Answer: A`
+      ],
+      [
+        '## Section 2: MCQ - Multiple Correct Answer Type',
+        `## Section 2: MCQ - Multiple Correct Answer Type
+Q2. (Apply) More than one option may be correct. Placeholder to be kept source-rooted.
+A. Option A
+B. Option B
+C. Option C
+D. Option D
+Solution:
+Step 1. Revisit the relevant line from the uploaded source.
+Step 2. Keep the reasoning inside the source boundary.
+Final Answer: A`
+      ],
+      [
+        '## Section 3: Comprehension',
+        `## Section 3: Comprehension
+Read the following passage and answer the questions below.
+
+Passage: Build the passage only from the uploaded source.
+
+Q3. (Understand) Source-rooted comprehension placeholder.
+A. Option A
+B. Option B
+C. Option C
+D. Option D
+Solution:
+Step 1. Revisit the relevant line from the uploaded source.
+Step 2. Keep the reasoning inside the source boundary.
+Final Answer: A`
+      ],
+      [
+        '## Section 4: Assertion & Reason',
+        `## Section 4: Assertion & Reason
+Q4. (Analyse) Assertion and reason placeholder.
+Solution:
+Step 1. Revisit the relevant line from the uploaded source.
+Step 2. Keep the reasoning inside the source boundary.
+Final Answer: Assertion is correct and Reason is correct.`
+      ],
+      [
+        '## Section 5: Matching Type',
+        `## Section 5: Matching Type
+Q5. (Apply) Matching placeholder.
+Solution:
+Step 1. Revisit the relevant line from the uploaded source.
+Step 2. Keep the reasoning inside the source boundary.
+Final Answer: A-1, B-2, C-3, D-4`
+      ],
+      [
+        '## Section 6: Source-Aligned PYQ Style',
+        `## Section 6: Source-Aligned PYQ Style
+Q6. (Evaluate) PYQ-style placeholder.
+A. Option A
+B. Option B
+C. Option C
+D. Option D
+Solution:
+Step 1. Revisit the relevant line from the uploaded source.
+Step 2. Keep the reasoning inside the source boundary.
+Final Answer: A`
+      ],
+      [
+        '## Section 7: Key & Solutions',
+        `## Section 7: Key & Solutions
+This section may restate answers in compact form if needed, but each question above should already include its own solution block.`
+      ],
+      [
+        '## Bonus Section: 10 Advanced Questions - JEE Advanced & International Olympiad Level',
+        `## Bonus Section: 10 Advanced Questions - JEE Advanced & International Olympiad Level
+Add 5 JEE Advanced level and 5 International Olympiad level questions while staying inside ${concepts}.`
+      ],
+      [
+        '## Section 8: Classwork and Homework Classification',
+        `## Section 8: Classwork and Homework Classification
+### Classwork and Homework Classification
+
+| Category | Recommended Purpose | Question Numbers | Rationale |
+| --- | --- | --- | --- |
+| Classwork | Teacher-guided discussion | Q2, Q3, Q4, Q5, Q6 | Higher-order reasoning and discussion |
+| Homework | Independent practice | Q1 | Reinforcement and direct revision |
+
+Teacher note: Higher-order thinking and discussion-oriented questions are recommended for Classwork. Reinforcement questions are recommended for Homework.`
+      ]
+    ];
   }
 
-  static getCategoryLabel(category) {
-    switch (category) {
-      case WORKSHEET_CATEGORIES.SIMILAR:
-        return 'Similar Questions';
-      case WORKSHEET_CATEGORIES.PYQ_STYLE:
-        return 'Previous Year Style Questions';
-      case WORKSHEET_CATEGORIES.REFERENCE:
-        return 'Reference Questions';
-      case WORKSHEET_CATEGORIES.DIRECT:
-      default:
-        return 'Direct Questions';
+  static validateOutput(content) {
+    if (!String(content || '').trim()) {
+      throw new Error('The generated worksheet is empty.');
+    }
+
+    const requiredSections = [
+      '# Premium Olympiad Practice Worksheet',
+      '## Source Concept Audit',
+      '## Section 1: MCQ - Single Correct Answer Type',
+      '## Section 2: MCQ - Multiple Correct Answer Type',
+      '## Section 3: Comprehension',
+      '## Section 4: Assertion & Reason',
+      '## Section 5: Matching Type',
+      '## Section 6: Source-Aligned PYQ Style',
+      '## Section 7: Key & Solutions',
+      '## Bonus Section: 10 Advanced Questions - JEE Advanced & International Olympiad Level',
+      '## Section 8: Classwork and Homework Classification'
+    ];
+
+    for (const marker of requiredSections) {
+      if (!content.includes(marker)) {
+        throw new Error(`Generated worksheet is missing section marker: ${marker}`);
+      }
     }
   }
 
-  static getReferenceSourcesBySubject(subject) {
-    switch (String(subject || '').trim().toLowerCase()) {
-      case 'physics':
-        return 'Physics: H.C. Verma, Halliday/Resnick/Walker, Irodov, Krotov, Griffiths, Beiser.';
-      case 'chemistry':
-        return 'Chemistry: P. Bahadur, N. Avasthi, Atkins, O.P. Tandon, Morrison & Boyd, M.S. Chauhan, Peter Sykes, J.D. Lee, NCERT.';
-      case 'biology':
-        return 'Biology: NCERT and standard authored books. Each question should include reference information such as "Reference: NCERT style" or "Reference: Standard Authored Book style".';
-      case 'maths':
-      case 'mathematics':
-        return 'Mathematics: S.L. Loney, Hall & Knight, I.A. Maron, Tata McGraw Hill, Cengage, Arihant, Prasolov, A. Das Gupta, NCERT.';
-      default:
-        return 'Reference books should match the current subject and chapter.';
-    }
-  }
+  static buildFallbackContent(chapterName, audit) {
+    const title = String(chapterName || '').trim() || audit.chapterTitle || 'Worksheet Topic';
+    const concepts = audit.allowedConcepts.length ? audit.allowedConcepts.join(', ') : 'source concepts only';
+    return `# Premium Olympiad Practice Worksheet
 
-  static countQuestions(text) {
-    if (!text) return 0;
-    const matches = text.match(/(^|\n)\s*(?:Q\s*)?(\d+)[\.\)]\s+/gi);
-    return matches ? matches.length : 0;
+## Premium Olympiad Practice Worksheet
+
+## Title Page
+**Program**: Maestro Worksheet Generator
+**Subject**: ${audit.subject || 'Subject'}
+**Chapter**: ${title}
+**Theme line**: "Academic + Premium Coaching Institute Style"
+Every question in this worksheet must remain within the source boundaries.
+
+## Source Concept Audit
+**Chapter / Topic Title**: ${title}
+
+**Concepts Explicitly Present**:
+- ${concepts.split(', ').join('\n- ')}
+
+**Concepts Not Present And Therefore Not Allowed**:
+- Any idea outside the uploaded source
+
+**Formula Bank**:
+- Use only formulas visible in the source
+
+**Diagram Opportunities**:
+- Add only source-rooted figures if needed
+
+## Section 1: MCQ - Single Correct Answer Type
+Q1. (Remember) Source-rooted placeholder question.
+A. Option A
+B. Option B
+C. Option C
+D. Option D
+Solution:
+Step 1. Revisit the exact line from the uploaded source.
+Step 2. Keep the explanation within source scope.
+Final Answer: A
+
+## Section 2: MCQ - Multiple Correct Answer Type
+Q2. (Apply) More than one option may be correct. Source-rooted placeholder question.
+A. Option A
+B. Option B
+C. Option C
+D. Option D
+Solution:
+Step 1. Revisit the exact line from the uploaded source.
+Step 2. Keep the explanation within source scope.
+Final Answer: A
+
+## Section 3: Comprehension
+Read the following passage and answer the questions below.
+
+Passage: Build a passage only from the uploaded source.
+
+## Section 4: Assertion & Reason
+Q3. (Understand) Assertion and reason placeholder.
+Solution:
+Step 1. Revisit the exact line from the uploaded source.
+Step 2. Keep the explanation within source scope.
+Final Answer: Assertion is correct and Reason is correct.
+
+## Section 5: Matching Type
+Q4. (Apply) Matching placeholder.
+Solution:
+Step 1. Revisit the exact line from the uploaded source.
+Step 2. Keep the explanation within source scope.
+Final Answer: A-1, B-2, C-3, D-4
+
+## Section 6: Source-Aligned PYQ Style
+Q5. (Analyse) PYQ-style placeholder.
+A. Option A
+B. Option B
+C. Option C
+D. Option D
+Solution:
+Step 1. Revisit the exact line from the uploaded source.
+Step 2. Keep the explanation within source scope.
+Final Answer: A
+
+## Section 7: Key & Solutions
+This section may restate answers in compact form if needed, but each question above should already include its own solution block.
+
+## Bonus Section: 10 Advanced Questions - JEE Advanced & International Olympiad Level
+Prepare advanced source-bounded questions here.
+
+## Section 8: Classwork and Homework Classification
+### Classwork and Homework Classification
+
+| Category | Recommended Purpose | Question Numbers | Rationale |
+| --- | --- | --- | --- |
+| Classwork | Teacher-guided discussion | Q2, Q3, Q4, Q5 | Higher-order thinking and discussion |
+| Homework | Independent practice | Q1 | Reinforcement and direct recall |
+
+Teacher note: Higher-order thinking and discussion-oriented questions are better for classwork, while reinforcement questions are suitable for homework.`;
   }
 
   static resolveWorksheetTitle(program, subject, chapterName) {
     const safeChapter = String(chapterName || '').trim();
     if (safeChapter) {
-      return safeChapter.toUpperCase();
+      return safeChapter;
     }
-    const safeProgram = String(program || '').trim();
-    const safeSubject = String(subject || '').trim();
-    const fallback = [safeProgram, safeSubject].filter(Boolean).join(' - ');
-    return fallback || 'WORKSHEET';
+    return [program, subject].filter(Boolean).join(' - ') || 'Worksheet';
   }
 }
 

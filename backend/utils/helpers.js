@@ -19,8 +19,8 @@ function isValidFileType(filename) {
 // Format filename for storage
 function formatStoragePath(worksheetId, filename, isInput = true) {
   const extension = getFileExtension(filename);
-  const fileName = isInput ? `input.${extension}` : 'manual.pdf';
-  return `worksheets/${worksheetId}/${fileName}`;
+  const fileName = isInput ? `input.${extension}` : 'manual.docx';
+  return `worksheetgenerator/${worksheetId}/${fileName}`;
 }
 
 // Get content type based on file extension

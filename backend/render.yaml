@@ -22,7 +22,9 @@ services:
       - key: AUTH_SECRET
         sync: false
       - key: USERS_TABLE
-        value: users
+        value: worksheetgeneratorusers
+      - key: WORKSHEETS_TABLE
+        value: worksheetgenerator
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL

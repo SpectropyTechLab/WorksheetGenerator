@@ -1,7 +1,7 @@
 const supabase = require('../config/database');
 const { signToken, verifyPassword } = require('../utils/auth');
 
-const USERS_TABLE = process.env.USERS_TABLE || 'users';
+const USERS_TABLE = process.env.USERS_TABLE || 'worksheetgeneratorusers';
 const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7;
 
 class AuthController {

@@ -2,8 +2,11 @@ const fs = require('fs/promises');
 const path = require('path');
 const os = require('os');
 const { execFile } = require('child_process');
-const PDFCompiler = require('./pdfCompiler');
 const { resolvePandocBinary } = require('../utils/resolveBinary');
+const REFERENCE_DOC_CANDIDATES = [
+  process.env.DOCX_REFERENCE_PATH,
+  'C:\\Users\\MY PC\\Downloads\\MAESTRO_PHY_FREE_BODY_DIAGRAM_PREMIUM_WORKSHEET.docx'
+].filter(Boolean);
 
 function execFileAsync(command, args, options) {
   return new Promise((resolve, reject) => {
@@ -91,36 +94,117 @@ function sanitizeMarkdownForPandoc(markdownContent) {
     })
     .join('');
 
+  // Ensure labeled sections followed by list items are parsed as real lists.
+  text = text
+    .replace(/(\*\*[^*\n]+\*\*:\s*)\n(?=[*-]\s)/g, '$1\n\n')
+    .replace(/(^[A-Za-z][^\n:]{2,}:\s*)\n(?=[*-]\s)/gm, '$1\n\n');
+
+  // Preserve line-by-line structure for title-page fields and question blocks in DOCX output.
+  const hardBreakPatterns = [
+    /^\*\*Program\*\*:/,
+    /^\*\*Subject\*\*:/,
+    /^\*\*Chapter\*\*:/,
+    /^\*\*Theme line\*\*:/,
+    /^Program:/,
+    /^Subject:/,
+    /^Chapter:/,
+    /^Theme line:/,
+    /^Source-fidelity statement:/i,
+    /^Passage:/,
+    /^Q\d+\./,
+    /^[A-D]\.\s/,
+    /^Solution:$/,
+    /^Step \d+\./,
+    /^Final Answer:/,
+    /^Figure note:/,
+    /^Diagram:/
+  ];
+
+  text = text
+    .split('\n')
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return line;
+      if (
+        trimmed.startsWith('#') ||
+        trimmed.startsWith('|') ||
+        trimmed.startsWith('- ') ||
+        trimmed.startsWith('* ') ||
+        /^\d+\.\s/.test(trimmed) ||
+        trimmed === '---'
+      ) {
+        return line;
+      }
+
+      if (hardBreakPatterns.some((pattern) => pattern.test(trimmed))) {
+        return `${trimmed}\\`;
+      }
+
+      return line;
+    })
+    .join('\n');
+
   return text;
 }
 
+function buildDocxReferenceMarkdown(content) {
+  const source = sanitizeMarkdownForPandoc(content);
+  return [
+    '---',
+    `title: "Premium Olympiad Practice Worksheet"`,
+    'lang: en-US',
+    '---',
+    '',
+    source
+  ].join('\n');
+}
+
+async function resolveReferenceDocPath() {
+  for (const candidate of REFERENCE_DOC_CANDIDATES) {
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch {
+      // Try next candidate.
+    }
+  }
+
+  return null;
+}
+
 class DocxCompiler {
-  static async compile(latexContent, worksheetId) {
+  static async compile(latexContent, worksheetId, chapterName) {
     const pandocBin = resolvePandocBinary();
     const workDir = await fs.mkdtemp(path.join(os.tmpdir(), `p2m-docx-${worksheetId}-`));
+    const markdownPath = path.join(workDir, 'manual.md');
     const inputPath = path.join(workDir, 'manual.tex');
     const outputPath = path.join(workDir, 'manual.docx');
 
     try {
-      // Build a full LaTeX document so Pandoc receives valid LaTeX (lists, escaping, etc.).
-      const latexDoc = PDFCompiler.buildLatexDocument(latexContent, '', worksheetId);
-      const sanitizedLatex = sanitizeLatexForPandoc(latexDoc);
-      await fs.writeFile(inputPath, sanitizedLatex, 'utf8');
       try {
+        const markdownText = buildDocxReferenceMarkdown(latexContent);
+        const referenceDoc = await resolveReferenceDocPath();
+        const markdownArgs = ['--from=markdown+tex_math_dollars+raw_tex+pipe_tables', '--to=docx'];
+        if (referenceDoc) {
+          markdownArgs.push(`--reference-doc=${referenceDoc}`);
+        }
+        markdownArgs.push(markdownPath, '-o', outputPath);
+        await fs.writeFile(markdownPath, markdownText, 'utf8');
+        await execFileAsync(
+          pandocBin,
+          markdownArgs,
+          {
+            timeout: 120000,
+            windowsHide: true
+          }
+        );
+      } catch (markdownError) {
+        const sanitizedLatex = sanitizeLatexForPandoc(String(latexContent || ''));
+        await fs.writeFile(inputPath, sanitizedLatex, 'utf8');
         await execFileAsync(pandocBin, ['--from=latex', '--to=docx', inputPath, '-o', outputPath], {
           timeout: 120000,
           windowsHide: true
         });
-      } catch (latexError) {
-        // Fallback: use markdown input to avoid Pandoc LaTeX reader edge cases.
-        const markdownPath = path.join(workDir, 'manual.md');
-        const markdownText = sanitizeMarkdownForPandoc(latexContent);
-        await fs.writeFile(markdownPath, markdownText, 'utf8');
-        await execFileAsync(
-          pandocBin,
-          ['--from=markdown+tex_math_dollars+raw_tex', '--to=docx', markdownPath, '-o', outputPath],
-          { timeout: 120000, windowsHide: true }
-        );
       }
       const docxBuffer = await fs.readFile(outputPath);
       return docxBuffer;

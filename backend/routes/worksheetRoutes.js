@@ -10,10 +10,7 @@ router.post('/', requireAuth, upload, handleMulterError, WorksheetController.cre
 router.get('/:id/status', requireAuth, WorksheetController.getWorksheetStatus);
 
 // File routes
-router.get('/:id/pdf', requireAuth, FileController.getPdfPreview);
-router.get('/:id/download', requireAuth, FileController.downloadPdf);
 router.get('/:id/docx', requireAuth, FileController.downloadDocx);
-router.get('/:id/pdf-url', requireAuth, FileController.getPdfUrl);
 router.delete('/:id', requireAuth, FileController.deleteWorksheet);
 
 module.exports = router;

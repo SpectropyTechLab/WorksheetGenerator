@@ -1,7 +1,7 @@
 const supabase = require('../config/database');
 const { hashPassword } = require('../utils/auth');
 
-const USERS_TABLE = process.env.USERS_TABLE || 'users';
+const USERS_TABLE = process.env.USERS_TABLE || 'worksheetgeneratorusers';
 
 class UsersController {
   static async list(req, res) {

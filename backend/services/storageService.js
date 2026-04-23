@@ -128,7 +128,7 @@ class StorageService {
    * @returns {Promise<{path: string, url: string}>}
    */
   static async uploadInputFile(worksheetId, fileBuffer, originalFilename) {
-    const filePath = `worksheets/${worksheetId}/input.${getFileExtension(originalFilename)}`;
+    const filePath = `worksheetgenerator/${worksheetId}/input.${getFileExtension(originalFilename)}`;
     
     return await this.uploadFile(
       storageConfig.inputBucket,
@@ -139,30 +139,13 @@ class StorageService {
   }
 
   /**
-   * Upload output PDF
-   * @param {string} worksheetId - Worksheet ID
-   * @param {Buffer} pdfBuffer - PDF buffer
-   * @returns {Promise<{path: string, url: string}>}
-   */
-  static async uploadOutputPdf(worksheetId, pdfBuffer) {
-    const filePath = `worksheets/${worksheetId}/manual.pdf`;
-    
-    return await this.uploadFile(
-      storageConfig.outputBucket,
-      filePath,
-      pdfBuffer,
-      'pdf'
-    );
-  }
-
-  /**
    * Upload output DOCX
    * @param {string} worksheetId - Worksheet ID
    * @param {Buffer} docxBuffer - DOCX buffer
    * @returns {Promise<{path: string, url: string}>}
    */
   static async uploadOutputDocx(worksheetId, docxBuffer) {
-    const filePath = `worksheets/${worksheetId}/manual.docx`;
+    const filePath = `worksheetgenerator/${worksheetId}/manual.docx`;
     
     return await this.uploadFile(
       storageConfig.outputBucket,
