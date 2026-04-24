@@ -25,22 +25,16 @@ services:
         value: worksheetgeneratorusers
       - key: WORKSHEETS_TABLE
         value: worksheetgenerator
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: OPENAI_MODEL
-        value: gpt-4o
-      - key: OPENAI_FALLBACK
-        value: "false"
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL
-        value: gemini-2.0-flash
-      - key: GEMINI_FALLBACK
-        value: "false"
-      - key: GEMINI_FALLBACK_MODELS
-        value: gemini-1.5-flash-latest,gemini-2.5-flash
+        value: gemini-2.5-flash
       - key: GEMINI_MAX_OUTPUT_TOKENS
-        value: "8192"
+        value: "65535"
+      - key: GEMINI_INPUT_TOKEN_BUDGET_PER_MINUTE
+        value: "25000"
+      - key: GEMINI_RETRY_DELAY_MS
+        value: "30000"
       - key: WORKSHEET_CHUNK_SIZE
         value: "2"
       - key: WORKSHEET_MAX_CHUNK_DEPTH

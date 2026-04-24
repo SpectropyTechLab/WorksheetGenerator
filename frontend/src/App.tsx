@@ -473,7 +473,6 @@ function App() {
                             title="Generated Word preview"
                             className="pdf-frame"
                             src={officePreviewUrl}
-                            style={{ height: '60vh' }}
                           />
                         ) : status === 'ready' ? (
                           <div className="preview-placeholder">

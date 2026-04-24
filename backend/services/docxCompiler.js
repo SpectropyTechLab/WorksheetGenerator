@@ -84,12 +84,15 @@ function sanitizeMarkdownForPandoc(markdownContent) {
 
   // Prevent accidental emphasis from underscores in plain text.
   // Keep underscores inside math segments intact by leaving $...$ blocks alone.
+  text = normalizeMathForPandoc(text);
+
   const mathRegex = /(\$\$[\s\S]*?\$\$|\$[^$]*?\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\))/g;
+  const mathBlockRegex = /^(\$\$[\s\S]*\$\$|\$[^$]*\$|\\\[[\s\S]*\\\]|\\\([\s\S]*\\\))$/;
   const parts = text.split(mathRegex);
   text = parts
     .map((part) => {
       if (!part) return '';
-      if (mathRegex.test(part)) return part;
+      if (mathBlockRegex.test(part)) return part;
       return part.replace(/(?<!\\)_/g, '\\_');
     })
     .join('');
@@ -110,6 +113,17 @@ function sanitizeMarkdownForPandoc(markdownContent) {
     /^Chapter:/,
     /^Theme line:/,
     /^Source-fidelity statement:/i,
+    /^Chapter \/ Topic Title:/i,
+    /^## Premium Olympiad Practice Worksheet$/i,
+    /^###\s/,
+    /^Concepts Explicitly Present:?$/i,
+    /^Concepts Not Present And Therefore Not Allowed:?$/i,
+    /^Formula Bank:?$/i,
+    /^Diagram Opportunities:?$/i,
+    /^List I$/i,
+    /^List II$/i,
+    /^Assertion/i,
+    /^Reason:/i,
     /^Passage:/,
     /^Q\d+\./,
     /^[A-D]\.\s/,
@@ -147,16 +161,22 @@ function sanitizeMarkdownForPandoc(markdownContent) {
   return text;
 }
 
+function normalizeMathForPandoc(text) {
+  return String(text || '')
+    .replace(/\$\s+([^$]*?)\s+\$/g, '$$$1$$')
+    .replace(/\$\s*\n\s*/g, '$')
+    .replace(/\s*\n\s*\$/g, '$')
+    .replace(/\$([^\n$]+?)\n([^\n$]+?)\$/g, (_, a, b) => `$${`${a} ${b}`.replace(/\s+/g, ' ').trim()}$`)
+    .replace(/\$+\s*\$+/g, '')
+    .replace(/\$([^\$]*?)\$/g, (_, body) => {
+      const normalized = String(body || '').replace(/\s+/g, ' ').trim();
+      return normalized ? `$${normalized}$` : '';
+    });
+}
+
 function buildDocxReferenceMarkdown(content) {
   const source = sanitizeMarkdownForPandoc(content);
-  return [
-    '---',
-    `title: "Premium Olympiad Practice Worksheet"`,
-    'lang: en-US',
-    '---',
-    '',
-    source
-  ].join('\n');
+  return source;
 }
 
 async function resolveReferenceDocPath() {

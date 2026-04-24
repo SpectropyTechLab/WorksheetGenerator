@@ -5,7 +5,7 @@ class QuestionParser {
       return [];
     }
 
-    const normalized = source
+    const normalized = this.normalizeQuestionText(source)
       .replace(/\n{3,}/g, '\n\n')
       .replace(/[ \t]+\n/g, '\n');
 
@@ -31,7 +31,7 @@ class QuestionParser {
   }
 
   static parseBlock(number, block) {
-    const lines = String(block || '')
+    const lines = this.normalizeQuestionText(String(block || ''))
       .split('\n')
       .map((line) => line.trim())
       .filter(Boolean);
@@ -71,6 +71,16 @@ class QuestionParser {
     return String(line || '')
       .replace(/^\(?([a-dA-D])\)?[\.\): -]+\s*/, '($1) ')
       .trim();
+  }
+
+  static normalizeQuestionText(text) {
+    return String(text || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/([^\n])\s+(Q\d+[\.\)])\s+/g, '$1\n$2 ')
+      .replace(/([^\n])\s+((?:Assertion|Reason|List I|List II):?)/gi, '$1\n$2')
+      .replace(/\s+\(?([A-Da-d])\)?[\)\.]\s+/g, '\n$1. ')
+      .replace(/\n\(?([A-Da-d])\)?[\)\.]\s*/g, (_, letter) => `\n${letter.toUpperCase()}. `)
+      .replace(/\n{3,}/g, '\n\n');
   }
 }
 

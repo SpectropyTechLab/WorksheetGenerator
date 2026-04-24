@@ -18,13 +18,15 @@ class FileExtractor {
   static async extractFromDocx(buffer) {
     try {
       const pandocText = await this.extractDocxWithPandoc(buffer);
-      let baseText = this.normalizeMathText(this.normalizePandocText(pandocText || ''));
+      let baseText = this.postProcessExtractedText(
+        this.normalizeMathText(this.normalizePandocText(pandocText || ''))
+      );
       if (!baseText) {
         const mammothResult = await mammoth.extractRawText({ buffer });
         const equationText = await this.extractDocxEquations(buffer);
-        baseText = this.normalizeMathText(
+        baseText = this.postProcessExtractedText(this.normalizeMathText(
           [mammothResult.value || '', equationText || ''].filter(Boolean).join('\n\n')
-        );
+        ));
       }
       if (!baseText) {
         throw new Error('No text could be extracted from DOCX.');
@@ -45,9 +47,9 @@ class FileExtractor {
     try {
       const pix2texText = await this.extractPdfWithPix2Tex(buffer);
       const data = await pdf(buffer);
-      const baseText = this.normalizeMathText(data.text || '');
+      const baseText = this.postProcessExtractedText(this.normalizeMathText(data.text || ''));
       if (pix2texText) {
-        return `${baseText}\n\n${this.normalizeMathText(pix2texText)}`.trim();
+        return `${baseText}\n\n${this.postProcessExtractedText(this.normalizeMathText(pix2texText))}`.trim();
       }
       return baseText;
     } catch (error) {
@@ -356,7 +358,12 @@ class FileExtractor {
 
     output = output
       .replace(/\(\s*-\s*1\s*\)\s*\^\s*\+?\s*(\d+)/g, '(-1)^$1')
-      .replace(/\^\s*\+?\s*(\d+)/g, '^$1');
+      .replace(/\^\s*\+?\s*(\d+)/g, '^$1')
+      .replace(/\$\s+([^$]*?)\s+\$/g, '$$$1$$')
+      .replace(/\$\s*\n\s*/g, '$')
+      .replace(/\s*\n\s*\$/g, '$')
+      .replace(/([A-Za-z0-9)])\s*\^\s*([A-Za-z0-9(])/g, '$1^$2')
+      .replace(/([A-Za-z0-9)])\s*_\s*([A-Za-z0-9(])/g, '$1_$2');
 
     output = output.replace(/\n(?=\d+\s*$)/gm, '');
     output = output.replace(/\n(?=[a-zA-Z])(?<=[a-zA-Z0-9])/, '');
@@ -378,8 +385,74 @@ class FileExtractor {
     // Preserve LaTeX math delimiters for downstream rendering.
     output = output.replace(/\\'/g, "'");
     output = output.replace(/\\\$/g, '$');
+    output = output
+      .replace(/!\[[^\]]*]\([^)]*\)/g, ' ')
+      .replace(/\[([^\]]+)]\(([^)]+)\)/g, '$1')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/__([^_]+)__/g, '$1')
+      .replace(/^\s{0,3}#{1,6}\s*/gm, '')
+      .replace(/^\s*>\s*/gm, '')
+      .replace(/^\s*[-*+]\s+(?=[A-Za-z0-9])/gm, '')
+      .replace(/Stock Photos, and Vectors\s*\|\s*Shutterstock/gi, ' ')
+      .replace(/Images?, Stock Photos?, and Vectors?/gi, ' ')
+      .replace(/Shutterstock/gi, ' ')
+      .replace(/\n{3,}/g, '\n\n');
 
     return output;
+  }
+
+  static postProcessExtractedText(text) {
+    if (!text) return '';
+
+    const cleanedLines = String(text)
+      .split('\n')
+      .map((line) => String(line || '').trim())
+      .filter(Boolean)
+      .map((line) => line
+        .replace(/^#+\s*/, '')
+        .replace(/^>\s*/, '')
+        .replace(/^\|/, '')
+        .replace(/\|$/, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim()
+      )
+      .filter((line) => !this.isExtractionNoise(line))
+      .map((line) => this.normalizeTableLikeLine(line));
+
+    return cleanedLines
+      .filter(Boolean)
+      .filter((line, index, arr) => index === 0 || arr[index - 1] !== line)
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  static isExtractionNoise(line) {
+    const value = String(line || '').trim();
+    if (!value) return true;
+    if (/^[#=+\-–—_|:;.,\s]+$/.test(value)) return true;
+    if (/Stock Photos, and Vectors|Shutterstock/i.test(value)) return true;
+    if (/^\d+\s+Laws Exponents Images/i.test(value)) return true;
+    if (/^Page \d+$/i.test(value)) return true;
+    if (/^\+[-+=:| ]+\+$/.test(value)) return true;
+    return false;
+  }
+
+  static normalizeTableLikeLine(line) {
+    const value = String(line || '').trim();
+    if (!value) return '';
+    if (!/[|]/.test(value)) return value;
+
+    const parts = value
+      .split('|')
+      .map((part) => part.trim())
+      .filter(Boolean);
+
+    if (parts.length <= 1) {
+      return value.replace(/\|/g, ' ').replace(/\s{2,}/g, ' ').trim();
+    }
+
+    return parts.join(' - ');
   }
 
   /**

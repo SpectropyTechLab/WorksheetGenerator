@@ -75,6 +75,7 @@
 .single-line-header {
   display: flex;
   align-items: center;
+  justify-content: center;
   min-height: 100%;
 }
 
@@ -100,6 +101,8 @@
   font-size: clamp(1.6rem, 2.2vw, 2.6rem);
   color: #1e3242;
   margin: 0;
+  width: 100%;
+  text-align: center;
 }
 
 .hero-header {
@@ -175,9 +178,8 @@
   padding: 0 2.25rem 1.5rem;
   flex: 1;
   min-height: 0;
-  max-width: 1600px;
   width: 100%;
-  margin: 0 auto;
+  margin: 0;
 }
 
 .split-layout {
@@ -186,10 +188,10 @@
 }
 
 .workspace-content {
-  flex: 0 0 70vh;
-  min-height: 70vh;
+  flex: 1 1 auto;
+  min-height: calc(100vh - 210px);
   align-items: stretch;
-  grid-template-columns: minmax(320px, 0.92fr) minmax(0, 2.55fr);
+  grid-template-columns: minmax(220px, 10%) minmax(0, 90%);
   grid-template-rows: 1fr;
 }
 
@@ -220,6 +222,7 @@
   align-self: stretch;
   position: sticky;
   top: 1rem;
+  min-width: 0;
 }
 
 .workspace-rail {
@@ -230,16 +233,22 @@
 
 .workspace-rail-header {
   display: flex;
+  flex-direction: column;
   align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
+  justify-content: flex-start;
+  gap: 0.35rem;
+}
+
+.workspace-rail-header h2 {
+  margin: 0;
+  font-size: clamp(1.2rem, 1.45vw, 1.7rem);
 }
 
 .content-panel {
   min-height: 100%;
   width: 100%;
   align-self: stretch;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .workspace-section {
@@ -567,6 +576,8 @@
   gap: 1rem;
   flex: 1;
   min-height: 0;
+  height: 100%;
+  width: 100%;
 }
 
 .generator-view {
@@ -574,6 +585,8 @@
   flex-direction: column;
   gap: 1rem;
   min-height: 100%;
+  width: 100%;
+  min-width: 0;
 }
 
 .generator-form-panel,
@@ -610,9 +623,11 @@
 
 .generator-header-row {
   display: grid;
-  grid-template-columns: minmax(260px, 0.95fr) minmax(320px, 1.25fr);
+  grid-template-columns: minmax(240px, 30%) minmax(0, 60%);
   gap: 1rem;
   align-items: start;
+  width: 100%;
+  min-width: 0;
 }
 
 .content-topline-right {
@@ -621,16 +636,22 @@
 
 .generator-content-row {
   display: grid;
-  grid-template-columns: minmax(340px, 1fr) minmax(540px, 1.85fr);
+  grid-template-columns: minmax(300px, 30%) minmax(0, 70%);
   gap: 1rem;
   min-height: 0;
   flex: 1;
   align-items: start;
+  width: 100%;
+  min-width: 0;
 }
 
 .generator-preview-panel {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
+  width: 100%;
 }
 
 .preview-placeholder {
@@ -652,7 +673,11 @@
 
 .pdf-frame {
   width: 100%;
-  min-height: 480px;
+  min-height: 420px;
+  height: clamp(420px, 56vh, 760px);
+  max-height: 100%;
+  display: block;
+  box-sizing: border-box;
   border-radius: 24px;
   border: 1px solid rgba(24, 67, 93, 0.1);
   background: #fff;
@@ -660,6 +685,13 @@
 
 .download-row {
   padding-bottom: 0.25rem;
+  margin-top: auto;
+  padding-top: 0.35rem;
+  width: 100%;
+}
+
+.download-button {
+  max-width: 100%;
 }
 
 .status-steps {
@@ -676,29 +708,28 @@
 }
 
 .footer {
-  padding: 0.8rem 2.25rem 1rem;
+  padding: 0.35rem 2.25rem 0.5rem;
   display: flex;
   justify-content: center;
   gap: 1rem;
   flex-wrap: wrap;
   color: var(--ink-soft);
   font-size: 0.88rem;
-  max-width: 1440px;
   width: 100%;
-  margin: 0 auto;
-  flex: 0 0 10vh;
-  min-height: 64px;
+  margin: 0;
+  flex: 0 0 5vh;
+  min-height: 36px;
   align-items: center;
   margin-top: auto;
 }
 
 @media (max-width: 1280px) {
   .workspace-content {
-    grid-template-columns: minmax(280px, 0.9fr) minmax(0, 2.15fr);
+    grid-template-columns: minmax(200px, 12%) minmax(0, 88%);
   }
 
   .generator-content-row {
-    grid-template-columns: minmax(300px, 1fr) minmax(420px, 1.55fr);
+    grid-template-columns: minmax(280px, 36%) minmax(0, 64%);
   }
 }
 
@@ -722,6 +753,16 @@
   .generator-content-row,
   .users-view {
     grid-template-columns: 1fr;
+  }
+
+  .content {
+    padding-left: 1.25rem;
+    padding-right: 1.25rem;
+  }
+
+  .pdf-frame {
+    min-height: 380px;
+    height: 50vh;
   }
 }
 
@@ -763,11 +804,12 @@
   }
 
   .preview-placeholder {
-    min-height: 260px;
+    min-height: 300px;
   }
 
   .pdf-frame {
-    min-height: 360px;
+    min-height: 340px;
+    height: 42vh;
   }
 
   .status-step {
@@ -776,5 +818,9 @@
 
   .admin-row-actions {
     margin-left: 0;
+  }
+
+  .workspace-content {
+    min-height: auto;
   }
 }

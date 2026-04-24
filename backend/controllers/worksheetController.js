@@ -166,6 +166,7 @@ class WorksheetController {
   static async updateStatus(id, status, additionalData = {}) {
     const payload = {
       status,
+      updated_at: new Date().toISOString(),
       ...additionalData
     };
 
