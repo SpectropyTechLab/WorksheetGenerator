@@ -135,6 +135,7 @@ class LatexGenerator {
         chapterName,
         audit
       );
+      this.validateOutput(document);
 
       return document;
     } catch (error) {
@@ -179,7 +180,7 @@ class LatexGenerator {
     }
 
     const sectionContent = sectionParts.filter(Boolean).join('\n\n').trim();
-    return sectionContent;
+    return this.ensureQuestionSection(this.normalizeWorksheetFormatting(sectionContent), config);
   }
 
   static async generateComprehensionPassage(context, config) {
@@ -221,10 +222,14 @@ ${this.buildSharedContext(context)}
 
     try {
       const content = await this.generateWithFallbacks(prompt, QUESTION_SECTION_MAX_TOKENS);
-      return String(content || '').trim();
+      return this.ensureQuestionSlot(content, config, slot);
     } catch (error) {
       if (batchSize <= 1) {
-        throw error;
+        return this.buildFallbackQuestionSubsection(
+          this.buildSubsectionConfig(config, [start, end]),
+          context.audit,
+          [start, end]
+        );
       }
 
       const midpoint = Math.floor((start + end) / 2);
@@ -257,6 +262,17 @@ Formatting rules:
 - Every question must start exactly like: Qn. (${slot.bloom}) ...
 - Use the exact Bloom label ${slot.bloom} for every question in this slot.
 - ${config.typeRules}
+- Return each question as a multiline block in exactly this shape:
+  Qn. (${slot.bloom}) Question text
+  A. Option text
+  B. Option text
+  C. Option text
+  D. Option text
+- Keep the full question stem on the Qn. line only.
+- Put each option on its own separate line.
+- Do NOT place options on the same line as the question.
+- Do NOT merge multiple options into one paragraph.
+- Leave exactly one blank line between consecutive questions.
 - Preserve every mathematical expression exactly.
 - Wrap mathematical expressions in inline math delimiters like $...$ so they can be converted into Word equations later.
 - Do NOT include the section heading.
@@ -879,11 +895,76 @@ ${this.renderAuditList(audit.bannedConcepts)}`;
       }
     }
 
+    this.validateQuestionLayout(normalized, config);
+
     return normalized;
   }
 
   static ensureQuestionSlot(content, config, slot) {
-    return String(content || '').trim();
+    const normalized = this.normalizeWorksheetFormatting(String(content || '').trim());
+    const [start, end] = slot.range;
+    const placeholders = /placeholder question|option a|option b|option c|option d|dummy wording/i;
+
+    if (!normalized) {
+      throw new Error(`Model returned empty content for Q${start}-Q${end}.`);
+    }
+
+    if (placeholders.test(normalized)) {
+      throw new Error(`Model returned placeholder content for Q${start}-Q${end}.`);
+    }
+
+    const questionNumbers = this.extractQuestionNumbers(normalized);
+    for (let index = start; index <= end; index += 1) {
+      if (!questionNumbers.has(index)) {
+        throw new Error(`Model did not return Q${index} for ${config.heading}.`);
+      }
+    }
+
+    this.validateQuestionLayout(normalized, config, slot.range);
+
+    return normalized;
+  }
+
+  static validateQuestionLayout(content, config, range = null) {
+    const normalized = String(content || '').replace(/\r\n/g, '\n');
+    const parsedQuestions = QuestionParser.parse(normalized);
+    const [start, end] = range || config.range;
+    const relevantQuestions = parsedQuestions.filter((item) => Number(item.number) >= start && Number(item.number) <= end);
+
+    for (const question of relevantQuestions) {
+      const source = String(question.source || '');
+
+      if (!/^Q\d+\.\s/m.test(source)) {
+        throw new Error(`Question Q${question.number} is missing the expected "Qn." line structure.`);
+      }
+
+      if (this.sectionRequiresStandardOptions(config.sectionType)) {
+        const optionLines = source.match(/^[A-D]\.\s.+$/gm) || [];
+        if (optionLines.length !== 4) {
+          throw new Error(`Question Q${question.number} must have exactly four options on separate lines.`);
+        }
+      }
+
+      if (config.sectionType === 'matching') {
+        if (!/^List I$/m.test(source) || !/^List II$/m.test(source)) {
+          throw new Error(`Question Q${question.number} must preserve List I and List II on separate lines.`);
+        }
+      }
+    }
+
+    for (let index = start; index < end; index += 1) {
+      const next = index + 1;
+      if (normalized.includes(`Q${index}.`) && normalized.includes(`Q${next}.`)) {
+        const gapPattern = new RegExp(`Q${index}\\.[\\s\\S]*?\\n\\nQ${next}\\.`, 'm');
+        if (!gapPattern.test(normalized)) {
+          throw new Error(`Questions Q${index} and Q${next} must be separated by a blank line.`);
+        }
+      }
+    }
+  }
+
+  static sectionRequiresStandardOptions(sectionType) {
+    return ['single', 'multiple', 'comprehension', 'assertion', 'pyq', 'bonus'].includes(sectionType);
   }
 
   static auditSectionBlueprint(content, config) {
@@ -1153,20 +1234,51 @@ Teacher note: Higher-order thinking, analytical, and discussion-oriented questio
   }
 
   static normalizeWorksheetFormatting(text) {
-    return String(text || '')
+    const normalized = String(text || '')
       .replace(/\r\n/g, '\n')
-      .replace(/([^\n])\s+(Q\d+[\.\)])\s+/g, '$1\n$2 ')
+      .replace(/\u00A0/g, ' ')
+      .replace(/\t/g, '  ')
+      .replace(/([^\n])[ ]+(?=Q\d+[\.\)]\s)/g, '$1\n')
+      .replace(/([^\n])[ ]+(?=\(?[A-Da-d]\)?[\.\)]\s)/g, '$1\n')
+      .replace(/([^\n])[ ]+(?=(Assertion(?:\s*\(A\))?:|Reason(?:\s*\(R\))?:|List I:?|List II:?|Solution:|Final Answer:|Step \d+\.))/g, '$1\n')
       .replace(/\n?Q(\d+)\)\s+/g, '\nQ$1. ')
-      .replace(/([^\n])\s+(Assertion(?:\s*\(A\))?:)/g, '$1\n$2')
-      .replace(/([^\n])\s+(Reason(?:\s*\(R\))?:)/g, '$1\n$2')
-      .replace(/([^\n])\s+(List I:?)/g, '$1\n$2')
-      .replace(/([^\n])\s+(List II:?)/g, '$1\n$2')
-      .replace(/\s+\(?([A-Da-d])\)?[\)\.](?=\s)/g, '\n$1. ')
       .replace(/\n\(?([A-Da-d])\)?[\)\.]\s*/g, (_, letter) => `\n${letter.toUpperCase()}. `)
-      .replace(/([^\n])\s+(Solution:)/g, '$1\n$2')
-      .replace(/([^\n])\s+(Final Answer:)/g, '$1\n$2')
-      .replace(/([^\n])\s+(Step \d+\.)/g, '$1\n$2')
-      .replace(/([^\n])\n(Q\d+\.)/g, '$1\n\n$2')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+
+    const lines = normalized.split('\n');
+    const output = [];
+
+    for (let index = 0; index < lines.length; index += 1) {
+      let line = lines[index].replace(/[ \t]+$/g, '');
+      const trimmed = line.trim();
+
+      if (!trimmed) {
+        if (output[output.length - 1] !== '') {
+          output.push('');
+        }
+        continue;
+      }
+
+      if (/^Q\d+\)/.test(trimmed)) {
+        line = trimmed.replace(/^Q(\d+)\)\s+/, 'Q$1. ');
+      } else if (/^\(?[A-Da-d]\)?[\)\.]\s+/.test(trimmed)) {
+        line = trimmed.replace(/^\(?([A-Da-d])\)?[\)\.]\s+/, (_, letter) => `${letter.toUpperCase()}. `);
+      } else if (/^(Assertion(?:\s*\(A\))?|Reason(?:\s*\(R\))?|List I|List II|Solution:|Final Answer:|Step \d+\.)\s+/.test(trimmed)) {
+        line = trimmed;
+      } else {
+        line = trimmed;
+      }
+
+      if (/^Q\d+\./.test(trimmed) && output.length > 0 && output[output.length - 1] !== '') {
+        output.push('');
+      }
+
+      output.push(line);
+    }
+
+    return output
+      .join('\n')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
   }

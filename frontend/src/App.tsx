@@ -27,6 +27,19 @@ async function readErrorMessage(response: Response) {
   }
 }
 
+function formatElapsedTime(totalSeconds: number) {
+  const safeSeconds = Math.max(0, totalSeconds);
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
+
+  if (hours > 0) {
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
 function App() {
   const [worksheetId, setWorksheetId] = useState<string | null>(null);
   const [status, setStatus] = useState<WorksheetStatus | null>(null);
@@ -43,6 +56,8 @@ function App() {
   const [usersError, setUsersError] = useState<string | null>(null);
   const [userForm, setUserForm] = useState({ username: '', password: '', role: 'user' });
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const isAuthenticated = Boolean(authToken);
 
@@ -61,6 +76,30 @@ function App() {
     if (status === 'failed') return 1;
     return WORKFLOW_STEPS.indexOf(status);
   }, [status]);
+
+  const formattedElapsedTime = useMemo(() => formatElapsedTime(elapsedSeconds), [elapsedSeconds]);
+
+  useEffect(() => {
+    if (!jobStartedAt) {
+      setElapsedSeconds(0);
+      return;
+    }
+
+    const isTerminal = status === 'ready' || status === 'failed';
+    const updateElapsed = () => {
+      const seconds = Math.floor((Date.now() - jobStartedAt) / 1000);
+      setElapsedSeconds(seconds);
+    };
+
+    updateElapsed();
+
+    if (isTerminal) {
+      return;
+    }
+
+    const timerId = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(timerId);
+  }, [jobStartedAt, status]);
 
   useEffect(() => {
     if (!worksheetId || !status || status === 'ready' || status === 'failed') return;
@@ -119,6 +158,8 @@ function App() {
     setError(null);
     setDocxPreviewUrl(null);
     setChapterName(String(formData.get('chapterName') || '').trim() || null);
+    setJobStartedAt(Date.now());
+    setElapsedSeconds(0);
 
     try {
       const response = await fetch(`${API_BASE}/api/worksheet`, {
@@ -137,6 +178,8 @@ function App() {
       setWorkspaceView('worksheet');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
+      setJobStartedAt(null);
+      setElapsedSeconds(0);
     } finally {
       setIsSubmitting(false);
     }
@@ -446,7 +489,14 @@ function App() {
                         <p className="section-kicker">Preview and download</p>
                         <h2>Preview and download</h2>
                       </div>
-                      <span className={`status-pill ${status || 'idle'}`}>Status: {status ?? 'not started'}</span>
+                      <div className="status-toolbar">
+                        <span className={`status-pill ${status || 'idle'}`}>Status: {status ?? 'not started'}</span>
+                        {jobStartedAt && (
+                          <span className="timer-pill">
+                            Time: {formattedElapsedTime}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
 

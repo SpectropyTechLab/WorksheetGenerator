@@ -3,6 +3,7 @@ const path = require('path');
 const os = require('os');
 const { execFile } = require('child_process');
 const { resolvePandocBinary } = require('../utils/resolveBinary');
+const PANDOC_API_VERSION = [1, 23, 1];
 const REFERENCE_DOC_CANDIDATES = [
   process.env.DOCX_REFERENCE_PATH,
   'C:\\Users\\MY PC\\Downloads\\MAESTRO_PHY_FREE_BODY_DIAGRAM_PREMIUM_WORKSHEET.docx'
@@ -102,6 +103,8 @@ function sanitizeMarkdownForPandoc(markdownContent) {
     .replace(/(\*\*[^*\n]+\*\*:\s*)\n(?=[*-]\s)/g, '$1\n\n')
     .replace(/(^[A-Za-z][^\n:]{2,}:\s*)\n(?=[*-]\s)/gm, '$1\n\n');
 
+  text = normalizeQuestionBlocksForDocx(text);
+
   // Preserve line-by-line structure for title-page fields and question blocks in DOCX output.
   const hardBreakPatterns = [
     /^\*\*Program\*\*:/,
@@ -134,38 +137,104 @@ function sanitizeMarkdownForPandoc(markdownContent) {
     /^Diagram:/
   ];
 
-  text = text
-    .split('\n')
-    .map((line) => {
-      const trimmed = line.trim();
-      if (!trimmed) return line;
-      if (
-        trimmed.startsWith('#') ||
-        trimmed.startsWith('|') ||
-        trimmed.startsWith('- ') ||
-        trimmed.startsWith('* ') ||
-        /^\d+\.\s/.test(trimmed) ||
-        trimmed === '---'
-      ) {
-        return line;
-      }
-
-      if (hardBreakPatterns.some((pattern) => pattern.test(trimmed))) {
-        return `${trimmed}\\`;
-      }
-
-      return line;
-    })
-    .join('\n');
+  text = structureMarkdownForDocx(text, hardBreakPatterns);
 
   return text;
+}
+
+function structureMarkdownForDocx(text, hardBreakPatterns) {
+  const lines = String(text || '').split('\n');
+  const output = [];
+  let inLineBlock = false;
+
+  const pushBlank = () => {
+    if (output[output.length - 1] !== '') {
+      output.push('');
+    }
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/[ \t]+$/g, '');
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      if (inLineBlock) {
+        pushBlank();
+        inLineBlock = false;
+      }
+      pushBlank();
+      continue;
+    }
+
+    const isMarkdownBlock =
+      trimmed.startsWith('#') ||
+      trimmed.startsWith('|') ||
+      trimmed.startsWith('- ') ||
+      trimmed.startsWith('* ') ||
+      /^\d+\.\s/.test(trimmed) ||
+      trimmed === '---';
+
+    if (isMarkdownBlock) {
+      if (inLineBlock) {
+        pushBlank();
+        inLineBlock = false;
+      }
+      output.push(line);
+      continue;
+    }
+
+    if (hardBreakPatterns.some((pattern) => pattern.test(trimmed))) {
+      if (!inLineBlock && output.length > 0 && output[output.length - 1] !== '') {
+        output.push('');
+      }
+      output.push(`| ${trimmed}`);
+      inLineBlock = true;
+      continue;
+    }
+
+    if (inLineBlock) {
+      pushBlank();
+      inLineBlock = false;
+    }
+
+    output.push(line);
+  }
+
+  if (inLineBlock) {
+    pushBlank();
+  }
+
+  return output.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function normalizeQuestionBlocksForDocx(text) {
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  const output = [];
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/[ \t]+$/g, '');
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      if (output[output.length - 1] !== '') {
+        output.push('');
+      }
+      continue;
+    }
+
+    if (/^Q\d+\./.test(trimmed) && output.length > 0 && output[output.length - 1] !== '') {
+      output.push('');
+    }
+
+    output.push(line);
+  }
+
+  return output.join('\n').replace(/\n{3,}/g, '\n\n');
 }
 
 function normalizeMathForPandoc(text) {
   return String(text || '')
     .replace(/\$\s+([^$]*?)\s+\$/g, '$$$1$$')
-    .replace(/\$\s*\n\s*/g, '$')
-    .replace(/\s*\n\s*\$/g, '$')
     .replace(/\$([^\n$]+?)\n([^\n$]+?)\$/g, (_, a, b) => `$${`${a} ${b}`.replace(/\s+/g, ' ').trim()}$`)
     .replace(/\$+\s*\$+/g, '')
     .replace(/\$([^\$]*?)\$/g, (_, body) => {
@@ -177,6 +246,184 @@ function normalizeMathForPandoc(text) {
 function buildDocxReferenceMarkdown(content) {
   const source = sanitizeMarkdownForPandoc(content);
   return source;
+}
+
+function buildPandocJsonDocument(content) {
+  const normalized = String(content || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/^\s*<div[^>]*>\s*$/gim, '')
+    .replace(/^\s*<\/div>\s*$/gim, '')
+    .replace(/\u00A0/g, ' ')
+    .trim();
+
+  const lines = normalized.split('\n').map((line) => line.replace(/[ \t]+$/g, ''));
+  const blocks = [];
+
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      blocks.push({
+        t: 'Header',
+        c: [
+          headingMatch[1].length,
+          ['', [], []],
+          parseInlines(headingMatch[2])
+        ]
+      });
+      index += 1;
+      continue;
+    }
+
+    if (trimmed.startsWith('|')) {
+      const tableLines = [];
+      while (index < lines.length && lines[index].trim().startsWith('|')) {
+        tableLines.push(lines[index].trim());
+        index += 1;
+      }
+      blocks.push(...convertPipeTableToBlocks(tableLines));
+      continue;
+    }
+
+    if (/^- /.test(trimmed)) {
+      const items = [];
+      while (index < lines.length && /^- /.test(lines[index].trim())) {
+        items.push(lines[index].trim().replace(/^- /, ''));
+        index += 1;
+      }
+
+      blocks.push({
+        t: 'BulletList',
+        c: items.map((item) => [
+          {
+            t: 'Plain',
+            c: parseInlines(item)
+          }
+        ])
+      });
+      continue;
+    }
+
+    const chunk = [];
+    while (index < lines.length) {
+      const current = lines[index];
+      const currentTrimmed = current.trim();
+
+      if (!currentTrimmed) break;
+      if (/^(#{1,6})\s+/.test(currentTrimmed)) break;
+      if (currentTrimmed.startsWith('|')) break;
+      if (/^- /.test(currentTrimmed) && chunk.length > 0) break;
+
+      chunk.push(currentTrimmed);
+      index += 1;
+    }
+
+    if (chunk.length === 1) {
+      blocks.push({
+        t: 'Para',
+        c: parseInlines(chunk[0])
+      });
+      continue;
+    }
+
+    blocks.push({
+      t: 'LineBlock',
+      c: chunk.map((item) => parseInlines(item))
+    });
+  }
+
+  return {
+    'pandoc-api-version': PANDOC_API_VERSION,
+    meta: {},
+    blocks
+  };
+}
+
+function convertPipeTableToBlocks(lines) {
+  const rows = (lines || [])
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^\||\|$/g, '').split('|').map((cell) => cell.trim()));
+
+  if (rows.length === 0) {
+    return [];
+  }
+
+  const filteredRows = rows.filter((row) => !row.every((cell) => /^:?-+:?$/.test(cell)));
+  if (filteredRows.length <= 1) {
+    return filteredRows.map((row) => ({
+      t: 'Para',
+      c: parseInlines(row.join(' | '))
+    }));
+  }
+
+  const headers = filteredRows[0];
+  return filteredRows.slice(1).map((row) => {
+    const parts = headers
+      .map((header, index) => {
+        const value = row[index] || '';
+        return `${header}: ${value}`;
+      })
+      .join(' | ');
+
+    return {
+      t: 'Para',
+      c: parseInlines(parts)
+    };
+  });
+}
+
+function parseInlines(text) {
+  const source = String(text || '');
+  if (!source) {
+    return [];
+  }
+
+  const tokens = [];
+  const regex = /(\$[^$\n]+\$)/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = regex.exec(source)) !== null) {
+    if (match.index > lastIndex) {
+      tokens.push(...textToInlines(source.slice(lastIndex, match.index)));
+    }
+
+    const math = match[0].slice(1, -1).trim();
+    if (math) {
+      tokens.push({
+        t: 'Math',
+        c: [
+          { t: 'InlineMath' },
+          math
+        ]
+      });
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < source.length) {
+    tokens.push(...textToInlines(source.slice(lastIndex)));
+  }
+
+  return tokens;
+}
+
+function textToInlines(text) {
+  return String(text || '')
+    .split(/(\s+)/)
+    .filter((part) => part.length > 0)
+    .map((part) => (/^\s+$/.test(part)
+      ? { t: 'Space' }
+      : { t: 'Str', c: part }));
 }
 
 async function resolveReferenceDocPath() {
@@ -196,15 +443,33 @@ class DocxCompiler {
   static async compile(latexContent, worksheetId, chapterName) {
     const pandocBin = resolvePandocBinary();
     const workDir = await fs.mkdtemp(path.join(os.tmpdir(), `p2m-docx-${worksheetId}-`));
+    const jsonPath = path.join(workDir, 'manual.json');
     const markdownPath = path.join(workDir, 'manual.md');
     const inputPath = path.join(workDir, 'manual.tex');
     const outputPath = path.join(workDir, 'manual.docx');
 
     try {
       try {
+        const jsonDocument = buildPandocJsonDocument(latexContent);
+        const referenceDoc = await resolveReferenceDocPath();
+        const markdownArgs = ['--from=json', '--to=docx'];
+        if (referenceDoc) {
+          markdownArgs.push(`--reference-doc=${referenceDoc}`);
+        }
+        markdownArgs.push(jsonPath, '-o', outputPath);
+        await fs.writeFile(jsonPath, JSON.stringify(jsonDocument), 'utf8');
+        await execFileAsync(
+          pandocBin,
+          markdownArgs,
+          {
+            timeout: 120000,
+            windowsHide: true
+          }
+        );
+      } catch (jsonError) {
         const markdownText = buildDocxReferenceMarkdown(latexContent);
         const referenceDoc = await resolveReferenceDocPath();
-        const markdownArgs = ['--from=markdown+tex_math_dollars+raw_tex+pipe_tables', '--to=docx'];
+        const markdownArgs = ['--from=markdown+tex_math_dollars+raw_tex+pipe_tables+line_blocks', '--to=docx'];
         if (referenceDoc) {
           markdownArgs.push(`--reference-doc=${referenceDoc}`);
         }
@@ -218,13 +483,20 @@ class DocxCompiler {
             windowsHide: true
           }
         );
-      } catch (markdownError) {
+      }
+
+      const docxBuffer = await fs.readFile(outputPath);
+      return docxBuffer;
+    } catch (markdownError) {
+      try {
         const sanitizedLatex = sanitizeLatexForPandoc(String(latexContent || ''));
         await fs.writeFile(inputPath, sanitizedLatex, 'utf8');
         await execFileAsync(pandocBin, ['--from=latex', '--to=docx', inputPath, '-o', outputPath], {
           timeout: 120000,
           windowsHide: true
         });
+      } catch (latexError) {
+        throw latexError;
       }
       const docxBuffer = await fs.readFile(outputPath);
       return docxBuffer;
